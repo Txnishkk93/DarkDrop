@@ -11,7 +11,9 @@ const app = express();
 app.use(cors({
     origin: [
         "http://localhost:8080",
-        "https://dark-drop-six.vercel.app"
+        "http://localhost:3000",
+        "https://dark-drop-six.vercel.app",
+        "https://dark-drop-six.vercel.app/"
     ],
     methods: ["GET", "POST"],
     credentials: true
@@ -440,6 +442,23 @@ app.get("/api/health", (req: Request, res: Response) => {
     res.json({ status: "ok", jobs: Object.keys(jobs).length });
 });
 
-app.listen(3000, () => {
-    console.log("Server running on http://localhost:3000");
+// Root endpoint
+app.get("/", (req: Request, res: Response) => {
+    res.json({ 
+        success: true, 
+        message: "DarkDrop Backend API",
+        endpoints: {
+            health: "/api/health",
+            mediaInfo: "POST /api/media/info",
+            mediaDownload: "POST /api/media/download",
+            progress: "GET /api/media/progress/:jobId",
+            spotify: "POST /api/spotify/info",
+            downloads: "GET /downloads/:filename"
+        }
+    });
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
 });

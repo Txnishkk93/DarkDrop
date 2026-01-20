@@ -10,3 +10,4 @@ services:
     nixPkgs:
       - ffmpeg
       - python3
+      - yt-dlp
