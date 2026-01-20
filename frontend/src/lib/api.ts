@@ -72,14 +72,14 @@ export interface ProgressResponse {
 export async function fetchMediaInfo(url: string): Promise<MediaInfo> {
   if (!url.trim()) throw new Error("URL is required");
 
-  const response = await api.post("/media/info", { url: url.trim() });
+  const response = await api.post("/api/media/info", { url: url.trim() });
   return response.data;
 }
 
 export async function fetchSpotifyInfo(spotify_url: string): Promise<SpotifyInfo> {
   if (!spotify_url.trim()) throw new Error("Spotify URL is required");
 
-  const response = await api.post("/spotify/info", { spotify_url: spotify_url.trim() });
+  const response = await api.post("/api/spotify/info", { spotify_url: spotify_url.trim() });
   return response.data;
 }
 
@@ -91,7 +91,7 @@ export async function startDownload(
 ): Promise<DownloadResponse> {
   if (!url || !format_id) throw new Error("URL and format_id required");
 
-  const response = await api.post("/media/download", {
+  const response = await api.post("/api/media/download", {
     url: url.trim(),
     format_id,
     type,
@@ -104,7 +104,7 @@ export async function startDownload(
 export async function getProgress(job_id: string): Promise<ProgressResponse> {
   if (!job_id) throw new Error("Job ID required");
 
-  const response = await api.get(`/media/progress/${job_id}`);
+  const response = await api.get(`/api/media/progress/${job_id}`);
   const data = response.data;
 
   // Convert relative file_url → absolute
@@ -116,7 +116,7 @@ export async function getProgress(job_id: string): Promise<ProgressResponse> {
 }
 
 export async function checkHealth(): Promise<{ status: string; jobs: number }> {
-  const response = await api.get("/health");
+  const response = await api.get("/api/health");
   return response.data;
 }
 
