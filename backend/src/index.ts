@@ -10,10 +10,13 @@ import { v4 as uuid } from "uuid";
 const app = express();
 app.use(cors({
     origin: [
+        "http://localhost:8080",
         "https://dark-drop-six.vercel.app"
     ],
+    methods: ["GET", "POST"],
     credentials: true
 }));
+
 
 app.use(bodyParser.json());
 
