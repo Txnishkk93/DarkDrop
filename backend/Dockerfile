@@ -1,10 +1,7 @@
 FROM node:18-alpine
 
-# Install Python and pip for yt-dlp
-RUN apk add --no-cache python3 py3-pip ffmpeg
-
-# Install yt-dlp
-RUN pip install --no-cache-dir yt-dlp
+# Install ffmpeg (required by yt-dlp for audio/video processing)
+RUN apk add --no-cache ffmpeg
 
 WORKDIR /app
 
@@ -12,7 +9,7 @@ WORKDIR /app
 COPY package*.json ./
 COPY tsconfig.json ./
 
-# Install Node dependencies
+# Install Node dependencies (includes yt-dlp via npm)
 RUN npm install
 
 # Copy source code

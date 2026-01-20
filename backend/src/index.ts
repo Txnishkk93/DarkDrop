@@ -6,6 +6,10 @@ import { spawn } from "child_process";
 import fs from "fs";
 import path from "path";
 import { v4 as uuid } from "uuid";
+import { fileURLToPath } from "url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const ytDlpPath = path.join(__dirname, "..", "node_modules", ".bin", "yt-dlp");
 
 const app = express();
 app.use(cors({
@@ -87,7 +91,7 @@ function isValidUrl(url: string): boolean {
 
 function executeYtDlp(args: string[]): Promise<string> {
     return new Promise((resolve, reject) => {
-        const ytdlp = spawn("yt-dlp", args);
+        const ytdlp = spawn(ytDlpPath, args);
         let data = "";
         let errorData = "";
 
