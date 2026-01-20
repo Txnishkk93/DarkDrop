@@ -1,13 +1,11 @@
 services:
   - type: web
     name: downloader-backend
-    runtime: node
-    buildCommand: "npm run build"
-    startCommand: "npm run start"
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    buildCommand: ""
+    startCommand: ""
     envVars:
       - key: NODE_ENV
         value: production
-    nixPkgs:
-      - ffmpeg
-      - python3
-      - yt-dlp
+
