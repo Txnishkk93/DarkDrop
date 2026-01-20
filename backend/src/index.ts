@@ -400,7 +400,7 @@ app.get("/api/media/progress/:jobId", (req: Request, res: Response): any => {
 
     if (job.status === "completed") {
         // Return absolute URL for easier frontend handling
-        const fileUrl = `http://localhost:3000/downloads/${job.file}`;
+        const fileUrl = `https://darkdrop-10.onrender.com/downloads/${job.file}`;
         return res.json({
             success: true,
             status: "completed",
