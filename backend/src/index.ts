@@ -83,6 +83,34 @@ function isValidUrl(url: string): boolean {
     }
 }
 
+function executeYtDlp(args: string[]): Promise<string> {
+    return new Promise((resolve, reject) => {
+        const ytdlp = spawn("yt-dlp", args);
+        let data = "";
+        let errorData = "";
+
+        ytdlp.stdout.on("data", (chunk) => data += chunk.toString());
+        ytdlp.stderr.on("data", (chunk) => {
+            const message = chunk.toString();
+            if (!message.includes('WARNING:')) {
+                errorData += message;
+            }
+        });
+
+        ytdlp.on("error", (err) => {
+            reject(new Error(`Failed to execute yt-dlp: ${err.message}`));
+        });
+
+        ytdlp.on("close", (code) => {
+            if (code !== 0) {
+                reject(new Error(errorData || "yt-dlp execution failed"));
+            } else {
+                resolve(data);
+            }
+        });
+    });
+}
+
 app.post("/api/media/info", async (req: Request, res: Response): Promise<any> => {
     const { url } = req.body;
 
@@ -94,166 +122,129 @@ app.post("/api/media/info", async (req: Request, res: Response): Promise<any> =>
         return res.status(400).json({ success: false, error: "Invalid URL format" });
     }
 
-    const ytdlp = spawn("yt-dlp", [
-        "--dump-json",
-        "--no-playlist",
-        "--no-warnings",
-        url
-    ]);
+    try {
+        const output = await executeYtDlp([
+            "--dump-json",
+            "--no-playlist",
+            "--no-warnings",
+            url
+        ]);
 
-    let data = "";
-    let errorData = "";
-    let responseSent = false;
+        const json = JSON.parse(output);
 
-    ytdlp.stdout.on("data", (chunk) => data += chunk.toString());
-    ytdlp.stderr.on("data", (chunk) => {
-        const message = chunk.toString();
-        // Only log non-warning errors
-        if (!message.includes('WARNING:')) {
-            errorData += message;
-            console.error("yt-dlp error:", message);
-        }
-    });
+        // Create quality-based video formats (with audio merged)
+        const videoFormats: Format[] = [
+            {
+                format_id: "bestvideo[height<=2160]+bestaudio/best[height<=2160]",
+                quality: "4K (2160p)",
+                ext: "mp4",
+                filesize: 0,
+                has_audio: true,
+                has_video: true,
+                resolution: "2160p"
+            },
+            {
+                format_id: "bestvideo[height<=1440]+bestaudio/best[height<=1440]",
+                quality: "2K (1440p)",
+                ext: "mp4",
+                filesize: 0,
+                has_audio: true,
+                has_video: true,
+                resolution: "1440p"
+            },
+            {
+                format_id: "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
+                quality: "1080p",
+                ext: "mp4",
+                filesize: 0,
+                has_audio: true,
+                has_video: true,
+                resolution: "1080p"
+            },
+            {
+                format_id: "bestvideo[height<=720]+bestaudio/best[height<=720]",
+                quality: "720p",
+                ext: "mp4",
+                filesize: 0,
+                has_audio: true,
+                has_video: true,
+                resolution: "720p"
+            },
+            {
+                format_id: "bestvideo[height<=480]+bestaudio/best[height<=480]",
+                quality: "480p",
+                ext: "mp4",
+                filesize: 0,
+                has_audio: true,
+                has_video: true,
+                resolution: "480p"
+            },
+            {
+                format_id: "bestvideo[height<=360]+bestaudio/best[height<=360]",
+                quality: "360p",
+                ext: "mp4",
+                filesize: 0,
+                has_audio: true,
+                has_video: true,
+                resolution: "360p"
+            },
+            {
+                format_id: "bestvideo[height<=240]+bestaudio/best[height<=240]",
+                quality: "240p",
+                ext: "mp4",
+                filesize: 0,
+                has_audio: true,
+                has_video: true,
+                resolution: "240p"
+            }
+        ];
 
-    ytdlp.on("error", (err) => {
-        if (!responseSent) {
-            responseSent = true;
-            console.error("yt-dlp process error:", err);
-            res.status(500).json({
-                success: false,
-                error: "Failed to start media info extraction"
-            });
-        }
-    });
+        // Audio formats for music downloads
+        const audioFormats: Format[] = [
+            {
+                format_id: "bestaudio",
+                quality: "Best Audio",
+                ext: "m4a",
+                filesize: 0,
+                has_audio: true,
+                has_video: false,
+                resolution: "audio"
+            }
+        ];
 
-    ytdlp.on("close", (code) => {
-        if (responseSent) return;
-        responseSent = true;
+        // Detect available qualities from actual formats
+        const availableHeights = new Set<number>();
+        (json.formats || []).forEach((f: any) => {
+            if (f.height && f.vcodec !== 'none') {
+                availableHeights.add(f.height);
+            }
+        });
 
-        if (code !== 0) {
-            console.error("yt-dlp error output:", errorData);
-            return res.status(500).json({
-                success: false,
-                error: errorData || "Failed to fetch media info"
-            });
-        }
+        // Filter video formats to only include available qualities
+        const filteredVideoFormats = videoFormats.filter(format => {
+            const height = parseInt(format.resolution || "0");
+            // Include if exact match or if any quality >= this height exists
+            return Array.from(availableHeights).some(h => h >= height);
+        });
 
-        try {
-            const json = JSON.parse(data);
+        res.json({
+            success: true,
+            platform: json.extractor,
+            title: json.title,
+            thumbnail: json.thumbnail,
+            duration: json.duration,
+            formats: filteredVideoFormats.length > 0 ? filteredVideoFormats : videoFormats,
+            audio_formats: audioFormats
+        });
 
-            // Create quality-based video formats (with audio merged)
-            const videoFormats: Format[] = [
-                {
-                    format_id: "bestvideo[height<=2160]+bestaudio/best[height<=2160]",
-                    quality: "4K (2160p)",
-                    ext: "mp4",
-                    filesize: 0,
-                    has_audio: true,
-                    has_video: true,
-                    resolution: "2160p"
-                },
-                {
-                    format_id: "bestvideo[height<=1440]+bestaudio/best[height<=1440]",
-                    quality: "2K (1440p)",
-                    ext: "mp4",
-                    filesize: 0,
-                    has_audio: true,
-                    has_video: true,
-                    resolution: "1440p"
-                },
-                {
-                    format_id: "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
-                    quality: "1080p",
-                    ext: "mp4",
-                    filesize: 0,
-                    has_audio: true,
-                    has_video: true,
-                    resolution: "1080p"
-                },
-                {
-                    format_id: "bestvideo[height<=720]+bestaudio/best[height<=720]",
-                    quality: "720p",
-                    ext: "mp4",
-                    filesize: 0,
-                    has_audio: true,
-                    has_video: true,
-                    resolution: "720p"
-                },
-                {
-                    format_id: "bestvideo[height<=480]+bestaudio/best[height<=480]",
-                    quality: "480p",
-                    ext: "mp4",
-                    filesize: 0,
-                    has_audio: true,
-                    has_video: true,
-                    resolution: "480p"
-                },
-                {
-                    format_id: "bestvideo[height<=360]+bestaudio/best[height<=360]",
-                    quality: "360p",
-                    ext: "mp4",
-                    filesize: 0,
-                    has_audio: true,
-                    has_video: true,
-                    resolution: "360p"
-                },
-                {
-                    format_id: "bestvideo[height<=240]+bestaudio/best[height<=240]",
-                    quality: "240p",
-                    ext: "mp4",
-                    filesize: 0,
-                    has_audio: true,
-                    has_video: true,
-                    resolution: "240p"
-                }
-            ];
-
-            // Audio formats for music downloads
-            const audioFormats: Format[] = [
-                {
-                    format_id: "bestaudio",
-                    quality: "Best Audio",
-                    ext: "m4a",
-                    filesize: 0,
-                    has_audio: true,
-                    has_video: false,
-                    resolution: "audio"
-                }
-            ];
-
-            // Detect available qualities from actual formats
-            const availableHeights = new Set<number>();
-            (json.formats || []).forEach((f: any) => {
-                if (f.height && f.vcodec !== 'none') {
-                    availableHeights.add(f.height);
-                }
-            });
-
-            // Filter video formats to only include available qualities
-            const filteredVideoFormats = videoFormats.filter(format => {
-                const height = parseInt(format.resolution || "0");
-                // Include if exact match or if any quality >= this height exists
-                return Array.from(availableHeights).some(h => h >= height);
-            });
-
-            res.json({
-                success: true,
-                platform: json.extractor,
-                title: json.title,
-                thumbnail: json.thumbnail,
-                duration: json.duration,
-                formats: filteredVideoFormats.length > 0 ? filteredVideoFormats : videoFormats,
-                audio_formats: audioFormats
-            });
-
-        } catch (err) {
-            console.error("JSON parse error:", err);
-            res.status(500).json({
-                success: false,
-                error: "Failed to parse media info"
-            });
-        }
-    });
+    } catch (err: any) {
+        console.error("Error fetching media info:", err);
+        const errorMessage = err.message || "Failed to fetch media info";
+        res.status(500).json({
+            success: false,
+            error: errorMessage
+        });
+    }
 });
 
 app.post("/api/media/download", (req: Request, res: Response): any => {
