@@ -14,7 +14,6 @@
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
 
-    "suppressImplicitAnyIndexErrors": true,
 
     "strict": false,
     "jsx": "react-jsx",
