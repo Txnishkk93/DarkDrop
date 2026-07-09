@@ -1,6 +1,6 @@
 import axios from "axios";
 
-const API_BASE = "http://localhost:5000";
+const API_BASE = "";
 
 const api = axios.create({
   baseURL: API_BASE,
@@ -37,11 +37,14 @@ export interface MediaInfo {
   duration: number;
   platform: string;
   formats: MediaFormat[];
-  audio_formats?: MediaFormat[];
-  // Spotify specific
-  artist?: string;
-  album?: string;
-  coverImage?: string;
+}
+
+export interface ProgressResponse {
+  success?: boolean;
+  status: string;
+  progress: number;
+  file_url?: string;
+  error?: string;
 }
 
 export interface DownloadResponse {
@@ -59,28 +62,17 @@ export async function fetchMediaInfo(url: string): Promise<MediaInfo> {
   return response.data;
 }
 
-export async function fetchSpotifyInfo(spotify_url: string): Promise<MediaInfo> {
-  if (!spotify_url.trim()) throw new Error("Spotify URL is required");
-
-  const response = await api.post("/api/info", { url: spotify_url.trim() });
-  return response.data;
-}
-
 export async function startDownload(
   url: string,
-  format_id: string,
-  type: "video" | "audio",
-  audio_format?: string
-): Promise<DownloadResponse> {
+  format_id: string
+): Promise<{ success: boolean; job_id?: string; error?: string }> {
   if (!url.trim()) throw new Error("URL is required");
   
-  console.log('[api] Starting download:', { url, format_id, type, audio_format });
+  console.log('[api] Starting download:', { url, format_id });
   
-  const response = await api.post("/api/download", {
+  const response = await api.post("/api/media/download", {
     url: url.trim(),
-    format_id,
-    type,
-    audio_format: audio_format || "mp3"
+    format_id
   });
   
   console.log('[api] Download response:', response.data);
@@ -93,16 +85,35 @@ export async function checkHealth(): Promise<{ status: string }> {
   return response.data;
 }
 
-export function getDownloadUrl(filename: string): string {
-  if (!filename) return "";
-  return `${API_BASE}/api/file/${filename}`;
+export function getDownloadUrl(jobId: string): string {
+  if (!jobId) return "";
+  return `${API_BASE}/api/media/file/${jobId}`;
 }
 
 /* ================= HELPERS ================= */
 
-export function isSpotifyUrl(url: string): boolean {
-  const lowerUrl = url.toLowerCase();
-  return lowerUrl.includes("spotify.com") || lowerUrl.includes("open.spotify");
+export async function downloadFileToDisk(fileUrl: string): Promise<void> {
+  const response = await fetch(fileUrl);
+  if (!response.ok) {
+    let message = `Download failed (${response.status})`;
+    try {
+      const body = await response.json();
+      if (body?.error) message = body.error;
+    } catch {}
+    throw new Error(message);
+  }
+  const disposition = response.headers.get("Content-Disposition");
+  const match = disposition?.match(/filename="?([^"]+)"?/i);
+  const filename = match?.[1] || "download";
+  const blob = await response.blob();
+  const blobUrl = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = blobUrl;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
 }
 
 export function isValidUrl(url: string): boolean {
