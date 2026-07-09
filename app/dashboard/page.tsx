@@ -15,13 +15,22 @@ import {
   fetchMediaInfo,
   fetchSpotifyInfo,
   startDownload,
-  getProgress,
   isSpotifyUrl,
   type MediaInfo,
   type SpotifyInfo,
   type ProgressResponse,
 } from "@/lib/api";
+
 import { toast } from "sonner";
+
+// Add this helper function to poll progress
+async function getProgress(jobId: string): Promise<ProgressResponse> {
+  const response = await fetch(`/api/progress/${jobId}`);
+  if (!response.ok) {
+    throw new Error('Failed to fetch progress');
+  }
+  return response.json();
+}
 
 export default function DashboardPage() {
   const [url, setUrl] = useState("");
@@ -34,58 +43,73 @@ export default function DashboardPage() {
   const [downloading, setDownloading] = useState(false);
   const [progress, setProgress] = useState<ProgressResponse | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
+  
   // Spotify download state
   const [spotifyJobId, setSpotifyJobId] = useState<string | null>(null);
   const [spotifyDownloading, setSpotifyDownloading] = useState(false);
   const [spotifyProgress, setSpotifyProgress] = useState<ProgressResponse | null>(null);
+
   // Spotify download handler
   const handleSpotifyDownload = async () => {
     if (!url.trim()) return;
+    
     setSpotifyDownloading(true);
     setSpotifyProgress({ success: true, status: "pending", progress: 0 });
+    
     try {
-      // Use yt-dlp to download Spotify as audio (mp3)
-      const response = await startDownload(
-        url,
-        "bestaudio",
-        "audio",
-        "mp3"
-      );
-      if (response.success) {
+      const response = await startDownload(url, "bestaudio", "audio", "mp3");
+      
+      if (response.success && response.job_id) {
         setSpotifyJobId(response.job_id);
         toast.success("Spotify download started");
       } else {
-        throw new Error("Failed to start Spotify download");
+        throw new Error(response.error || "Failed to start Spotify download");
       }
     } catch (error) {
-      toast.error("Failed to start Spotify download");
+      console.error("Spotify download error:", error);
+      toast.error(error instanceof Error ? error.message : "Failed to start Spotify download");
       setSpotifyDownloading(false);
       setSpotifyProgress(null);
     }
   };
+
   // Poll Spotify download progress
   useEffect(() => {
     if (!spotifyJobId || !spotifyDownloading) return;
+    
     const interval = setInterval(async () => {
       try {
         const progressData = await getProgress(spotifyJobId);
         setSpotifyProgress(progressData);
+        
         if (progressData.status === "completed") {
           setSpotifyDownloading(false);
           toast.success("Spotify download complete!");
+          clearInterval(interval);
         } else if (progressData.status === "error") {
           setSpotifyDownloading(false);
           toast.error(progressData.error || "Spotify download failed");
+          clearInterval(interval);
         }
       } catch (error) {
+        console.error("Error polling Spotify progress:", error);
         setSpotifyDownloading(false);
+        clearInterval(interval);
       }
     }, 1000);
+    
     return () => clearInterval(interval);
   }, [spotifyJobId, spotifyDownloading]);
+
   const handleSpotifyDownloadFile = () => {
     if (spotifyProgress?.file_url) {
-      window.open(spotifyProgress.file_url, "_blank");
+      // Create a temporary link element to trigger download
+      const link = document.createElement('a');
+      link.href = spotifyProgress.file_url;
+      link.download = ''; // Browser will use filename from Content-Disposition header
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
     }
   };
 
@@ -99,6 +123,7 @@ export default function DashboardPage() {
     setMediaInfo(null);
     setSpotifyInfo(null);
     setProgress(null);
+    setJobId(null);
     setSelectedFormat("");
 
     try {
@@ -109,14 +134,16 @@ export default function DashboardPage() {
       } else {
         const info = await fetchMediaInfo(url);
         setMediaInfo(info);
+        
         if (info.formats?.length > 0) {
           setSelectedFormat(info.formats[0].format_id);
         }
+        
         toast.success("Media info loaded");
       }
     } catch (error) {
       console.error("Error fetching info:", error);
-      toast.error("Failed to fetch media info. Make sure the URL is valid.");
+      toast.error(error instanceof Error ? error.message : "Failed to fetch media info. Make sure the URL is valid.");
     } finally {
       setLoading(false);
     }
@@ -132,6 +159,8 @@ export default function DashboardPage() {
     setProgress({ success: true, status: "pending", progress: 0 });
 
     try {
+      console.log("Starting download:", { url, selectedFormat, downloadType, audioFormat });
+      
       const response = await startDownload(
         url,
         selectedFormat,
@@ -139,15 +168,17 @@ export default function DashboardPage() {
         downloadType === "audio" ? audioFormat : undefined,
       );
 
-      if (response.success) {
+      console.log("Download response:", response);
+
+      if (response.success && response.job_id) {
         setJobId(response.job_id);
         toast.success("Download started");
       } else {
-        throw new Error("Failed to start download");
+        throw new Error(response.error || "Failed to start download");
       }
     } catch (error) {
       console.error("Error starting download:", error);
-      toast.error("Failed to start download");
+      toast.error(error instanceof Error ? error.message : "Failed to start download");
       setDownloading(false);
       setProgress(null);
     }
@@ -158,6 +189,8 @@ export default function DashboardPage() {
 
     try {
       const progressData = await getProgress(jobId);
+      console.log("Progress update:", progressData);
+      
       setProgress(progressData);
 
       if (progressData.status === "completed") {
@@ -169,6 +202,7 @@ export default function DashboardPage() {
       }
     } catch (error) {
       console.error("Error polling progress:", error);
+      // Don't stop on polling errors, let it retry
     }
   }, [jobId]);
 
@@ -181,7 +215,15 @@ export default function DashboardPage() {
 
   const handleDownloadFile = () => {
     if (progress?.file_url) {
-      window.open(progress.file_url, "_blank");
+      // Create a temporary link element to trigger download
+      const link = document.createElement('a');
+      link.href = progress.file_url;
+      link.download = ''; // Browser will use filename from Content-Disposition header
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      
+      toast.success("Download started in your browser");
     }
   };
 
@@ -231,19 +273,33 @@ export default function DashboardPage() {
 
           {/* Spotify Info */}
           {spotifyInfo && (
-            <SpotifyCard
-              title={spotifyInfo.title}
-              artist={spotifyInfo.artist}
-              album={spotifyInfo.album}
-              coverImage={spotifyInfo.cover_image}
-              onDownload={
-                spotifyProgress?.status === "completed" && spotifyProgress.file_url
-                  ? handleSpotifyDownloadFile
-                  : handleSpotifyDownload
-              }
-              downloading={spotifyDownloading}
-              downloadReady={spotifyProgress?.status === "completed" && !!spotifyProgress.file_url}
-            />
+            <div className="space-y-4">
+              <SpotifyCard
+                title={spotifyInfo.title}
+                artist={spotifyInfo.artist}
+                album={spotifyInfo.album}
+                coverImage={spotifyInfo.cover_image}
+                onDownload={
+                  spotifyProgress?.status === "completed" && spotifyProgress.file_url
+                    ? handleSpotifyDownloadFile
+                    : handleSpotifyDownload
+                }
+                downloading={spotifyDownloading}
+                downloadReady={spotifyProgress?.status === "completed" && !!spotifyProgress.file_url}
+              />
+              
+              {/* Spotify Progress */}
+              {spotifyProgress && spotifyProgress.progress > 0 && (
+                <Card className="border-border/50 bg-card/50 backdrop-blur-sm">
+                  <CardContent className="p-6">
+                    <ProgressBar
+                      progress={spotifyProgress.progress}
+                      status={spotifyProgress.status}
+                    />
+                  </CardContent>
+                </Card>
+              )}
+            </div>
           )}
 
           {/* Media Info */}
@@ -259,7 +315,6 @@ export default function DashboardPage() {
               {/* Download Options */}
               <Card className="border-border/50 bg-card/50 backdrop-blur-sm animate-fade-in">
                 <CardContent className="p-6 space-y-6">
-
                   {mediaInfo.formats && mediaInfo.formats.length > 0 && (
                     <FormatSelector
                       formats={mediaInfo.formats}
@@ -278,7 +333,7 @@ export default function DashboardPage() {
                   />
 
                   {/* Progress */}
-                  {progress && (
+                  {progress && progress.progress > 0 && (
                     <ProgressBar
                       progress={progress.progress}
                       status={progress.status}
@@ -293,7 +348,7 @@ export default function DashboardPage() {
                         className="w-full py-6 rounded-xl glow-hover"
                       >
                         <Download className="mr-2 h-5 w-5" />
-                        Download File
+                        Save File to Computer
                       </Button>
                     ) : (
                       <Button
@@ -339,5 +394,3 @@ export default function DashboardPage() {
     </div>
   );
 }
-
-

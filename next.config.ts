@@ -1,7 +1,17 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  reactStrictMode: true,
+
+  // Allow serving files from downloads folder
+  async rewrites() {
+    return [
+      {
+        source: "/downloads/:path*",
+        destination: "/api/serve/:path*",
+      },
+    ];
+  },
 };
 
 export default nextConfig;

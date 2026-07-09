@@ -1,6 +1,6 @@
 import axios from "axios";
 
-const API_BASE = "/";
+const API_BASE = "http://localhost:5000";
 
 const api = axios.create({
   baseURL: API_BASE,
@@ -29,42 +29,25 @@ export interface MediaFormat {
   ext: string;
   quality: string;
   filesize?: number;
-  format_note?: string;
-  has_audio?: boolean;
-  has_video?: boolean;
-  resolution?: string;
 }
 
 export interface MediaInfo {
-  success: boolean;
   title: string;
   thumbnail: string;
   duration: number;
-  extractor: string;
+  platform: string;
   formats: MediaFormat[];
   audio_formats?: MediaFormat[];
-}
-
-export interface SpotifyInfo {
-  success: boolean;
-  title: string;
-  artist: string;
-  album: string;
-  cover_image: string;
+  // Spotify specific
+  artist?: string;
+  album?: string;
+  coverImage?: string;
 }
 
 export interface DownloadResponse {
-  success: boolean;
-  job_id: string;
-  error?: string;
-}
-
-export interface ProgressResponse {
-  success: boolean;
-  status: "pending" | "downloading" | "processing" | "completed" | "error";
-  progress: number;
-  file_url?: string;
-  error?: string;
+  file_id: string;
+  filename: string;
+  path: string;
 }
 
 /* ================= API FUNCTIONS ================= */
@@ -72,49 +55,47 @@ export interface ProgressResponse {
 export async function fetchMediaInfo(url: string): Promise<MediaInfo> {
   if (!url.trim()) throw new Error("URL is required");
 
-  const response = await api.post("/api/media/info", { url: url.trim() });
+  const response = await api.post("/api/info", { url: url.trim() });
   return response.data;
 }
 
-export async function fetchSpotifyInfo(spotify_url: string): Promise<SpotifyInfo> {
+export async function fetchSpotifyInfo(spotify_url: string): Promise<MediaInfo> {
   if (!spotify_url.trim()) throw new Error("Spotify URL is required");
 
-  const response = await api.post("/api/spotify/info", { spotify_url: spotify_url.trim() });
+  const response = await api.post("/api/info", { url: spotify_url.trim() });
   return response.data;
 }
 
-// Update your startDownload function in api.ts
 export async function startDownload(
   url: string,
   format_id: string,
   type: "video" | "audio",
   audio_format?: string
 ): Promise<DownloadResponse> {
-  // Extract video ID
-  const videoId = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([^&\n?#]+)/)?.[1];
+  if (!url.trim()) throw new Error("URL is required");
   
-  if (!videoId) throw new Error("Invalid YouTube URL");
+  console.log('[api] Starting download:', { url, format_id, type, audio_format });
   
-  // For now, redirect to external service
-  const downloadUrl = `https://9xbuddy.org/process?url=${encodeURIComponent(url)}`;
-  window.open(downloadUrl, '_blank');
+  const response = await api.post("/api/download", {
+    url: url.trim(),
+    format_id,
+    type,
+    audio_format: audio_format || "mp3"
+  });
   
-  return {
-    success: true,
-    job_id: 'direct-download',
-  };
-}
-
-export async function getProgress(job_id: string): Promise<ProgressResponse> {
-  if (!job_id) throw new Error("Job ID required");
-
-  const response = await api.get(`/api/media/progress/${job_id}`);
+  console.log('[api] Download response:', response.data);
+  
   return response.data;
 }
 
-export async function checkHealth(): Promise<{ status: string; jobs: number }> {
+export async function checkHealth(): Promise<{ status: string }> {
   const response = await api.get("/api/health");
   return response.data;
+}
+
+export function getDownloadUrl(filename: string): string {
+  if (!filename) return "";
+  return `${API_BASE}/api/file/${filename}`;
 }
 
 /* ================= HELPERS ================= */
@@ -149,38 +130,4 @@ export function formatFileSize(bytes?: number): string {
   if (kb >= 1) return `${kb.toFixed(1)} KB`;
 
   return `${bytes} bytes`;
-}
-
-export function getDownloadUrl(file_url: string): string {
-  if (!file_url) return "";
-  return file_url;
-}
-
-/* ================= PROGRESS POLLER ================= */
-
-export async function pollProgress(
-  job_id: string,
-  onProgress: (progress: ProgressResponse) => void,
-  pollInterval = 1000
-): Promise<ProgressResponse> {
-  return new Promise((resolve, reject) => {
-    const interval = setInterval(async () => {
-      try {
-        const progress = await getProgress(job_id);
-        onProgress(progress);
-
-        if (progress.status === "completed") {
-          clearInterval(interval);
-          resolve(progress);
-        } 
-        else if (progress.status === "error") {
-          clearInterval(interval);
-          reject(new Error(progress.error || "Download failed"));
-        }
-      } catch (error) {
-        clearInterval(interval);
-        reject(error);
-      }
-    }, pollInterval);
-  });
 }
