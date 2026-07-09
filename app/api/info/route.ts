@@ -13,7 +13,24 @@ export async function POST(request: Request) {
     try {
       // Primary method: yt-dlp
       const ytDlp = await getYtDlpWrap();
-      const stdout = await ytDlp.execPromise(['-j', '--no-playlist', '--no-warnings', url]);
+      const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+      const ytDlpArgs = [
+        '-j',
+        '--no-playlist',
+        '--no-warnings',
+        '--user-agent',
+        userAgent,
+        '--extractor-args',
+        'youtube:player_client=web,web_embedded',
+        '--add-header',
+        'Referer: https://www.youtube.com/',
+        '--add-header',
+        'Origin: https://www.youtube.com',
+        '--add-header',
+        'Accept-Language: en-US,en;q=0.9',
+        url,
+      ];
+      const stdout = await ytDlp.execPromise(ytDlpArgs);
       const info = JSON.parse(stdout);
 
       // Extract formats and deduplicate by resolution
