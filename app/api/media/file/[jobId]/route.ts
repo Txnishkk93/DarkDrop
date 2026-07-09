@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { jobStore } from '@/lib/server/jobStore';
-import { DOWNLOAD_DIR } from '../../download/route';
+import { DOWNLOAD_DIR } from '@/lib/server/downloadDir';
 import path from 'path';
 import fs from 'fs/promises';
 import { createReadStream } from 'fs';

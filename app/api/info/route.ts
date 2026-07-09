@@ -21,24 +21,25 @@ export async function POST(request: Request) {
       const rawFormats = info.formats || [];
 
       for (const f of rawFormats) {
-        if (f.vcodec !== 'none') {
+        if (f.vcodec !== 'none' && f.acodec !== 'none') {
           let height = f.height;
           if (!height && typeof f.format_note === 'string' && f.format_note.includes('p')) {
             const parsed = parseInt(f.format_note);
             if (!isNaN(parsed)) height = parsed;
           }
-          
+
           const resolutionLabel = height ? `${height}p` : f.format_note || f.resolution || 'unknown';
           const filesize = f.filesize || f.filesize_approx || 0;
 
-          // By setting into Map, we naturally keep the last (usually best) format for this resolution 
-          // because yt-dlp typically sorts from worst to best
-          formatMap.set(resolutionLabel, {
-            format_id: f.format_id,
-            ext: f.ext || 'mp4',
-            quality: resolutionLabel,
-            filesize: filesize,
-          });
+          const existing = formatMap.get(resolutionLabel);
+          if (!existing || filesize > (existing.filesize || 0)) {
+            formatMap.set(resolutionLabel, {
+              format_id: f.format_id,
+              ext: f.ext || 'mp4',
+              quality: resolutionLabel,
+              filesize,
+            });
+          }
         }
       }
 

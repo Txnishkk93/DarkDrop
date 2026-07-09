@@ -1,15 +1,13 @@
 import { NextResponse } from 'next/server';
 import { waitUntil } from '@vercel/functions';
-import os from 'os';
 import path from 'path';
 import fs from 'fs/promises';
 import { v4 as uuidv4 } from 'uuid';
 import { jobStore } from '@/lib/server/jobStore';
 import { getYtDlpWrap } from '@/lib/server/ytDlp';
-import ytdl from '@distube/ytdl-core'; // keep ytdl-core logic if needed, but let's stick to yt-dlp to unify
+import { DOWNLOAD_DIR } from '@/lib/server/downloadDir';
 
 export const maxDuration = 120; // Allow longer execution on Vercel
-export const DOWNLOAD_DIR = path.join(os.tmpdir(), "darkdrop-downloads");
 
 // Ensure the download directory exists
 async function ensureDir() {
@@ -45,7 +43,12 @@ async function processDownload(jobId: string, url: string, formatId: string) {
       // Check if job wasn't already marked as error
       const currentJob = jobStore.getJob(jobId);
       if (currentJob?.status !== 'error') {
-        jobStore.updateJob(jobId, { status: 'completed', file: filename, progress: 100 });
+        jobStore.updateJob(jobId, {
+          status: 'completed',
+          file: filename,
+          file_url: `/api/media/file/${jobId}`,
+          progress: 100,
+        });
       }
     });
 

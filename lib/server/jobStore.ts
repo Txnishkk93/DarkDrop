@@ -5,6 +5,7 @@ export interface Job {
   status: JobStatus;
   progress?: number;
   file?: string;
+  file_url?: string;
   error?: string;
   createdAt: number;
 }
