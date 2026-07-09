@@ -14,69 +14,160 @@ async function ensureDir() {
   await fs.mkdir(DOWNLOAD_DIR, { recursive: true }).catch(() => {});
 }
 
+async function runDownloadAttempt(
+  ytDlpWrap: Awaited<ReturnType<typeof getYtDlpWrap>>,
+  jobId: string,
+  args: string[],
+) {
+  const process = ytDlpWrap.exec(args);
+
+  return await new Promise<void>((resolve, reject) => {
+    let settled = false;
+
+    const finish = (callback: () => void) => {
+      if (!settled) {
+        settled = true;
+        callback();
+      }
+    };
+
+    process.on('progress', (progress: any) => {
+      if (typeof progress?.percent === 'number') {
+        jobStore.updateJob(jobId, { progress: progress.percent });
+      }
+    });
+
+    process.on('error', (error: Error) => {
+      finish(() => reject(error));
+    });
+
+    process.on('close', (code: number | null) => {
+      if (code === 0) {
+        finish(() => resolve());
+      } else {
+        finish(() => reject(new Error(`Download failed with exit code ${code ?? 'unknown'}`)));
+      }
+    });
+  });
+}
+
 async function processDownload(jobId: string, url: string, formatId: string) {
   try {
     await ensureDir();
     const ytDlpWrap = await getYtDlpWrap();
-    
+
     const ext = 'mp4';
     const filename = `${jobId}.${ext}`;
     const filePath = path.join(DOWNLOAD_DIR, filename);
-
     const formatStr = formatId ? `${formatId}+bestaudio/best` : 'best';
     const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
-    const args = [
-      '-f',
-      formatStr,
-      '--merge-output-format',
-      'mp4',
-      '--user-agent',
-      userAgent,
-      '--extractor-args',
-      'youtube:player_client=web,web_embedded',
-      '--add-header',
-      'Accept-Language: en-US,en;q=0.9',
-      '--no-warnings',
-      '-o',
-      filePath,
-      url,
+    const strategies = [
+      {
+        label: 'web',
+        args: [
+          '-f',
+          formatStr,
+          '--merge-output-format',
+          'mp4',
+          '--user-agent',
+          userAgent,
+          '--extractor-args',
+          'youtube:player_client=web,web_embedded',
+          '--add-header',
+          'Referer: https://www.youtube.com/',
+          '--add-header',
+          'Origin: https://www.youtube.com',
+          '--add-header',
+          'Accept-Language: en-US,en;q=0.9',
+          '--no-warnings',
+          '-o',
+          filePath,
+          url,
+        ],
+      },
+      {
+        label: 'android',
+        args: [
+          '-f',
+          formatStr,
+          '--merge-output-format',
+          'mp4',
+          '--user-agent',
+          userAgent,
+          '--extractor-args',
+          'youtube:player_client=android',
+          '--add-header',
+          'Referer: https://www.youtube.com/',
+          '--add-header',
+          'Origin: https://www.youtube.com',
+          '--add-header',
+          'Accept-Language: en-US,en;q=0.9',
+          '--no-warnings',
+          '-o',
+          filePath,
+          url,
+        ],
+      },
+      {
+        label: 'ios',
+        args: [
+          '-f',
+          formatStr,
+          '--merge-output-format',
+          'mp4',
+          '--user-agent',
+          userAgent,
+          '--extractor-args',
+          'youtube:player_client=ios',
+          '--add-header',
+          'Referer: https://www.youtube.com/',
+          '--add-header',
+          'Origin: https://www.youtube.com',
+          '--add-header',
+          'Accept-Language: en-US,en;q=0.9',
+          '--no-warnings',
+          '-o',
+          filePath,
+          url,
+        ],
+      },
     ];
 
     jobStore.updateJob(jobId, { status: 'processing', progress: 0 });
 
-    const process = ytDlpWrap.exec(args);
+    let lastError: Error | undefined;
 
-    process.on('progress', (progress: any) => {
-      // yt-dlp-wrap emits progress with a percent property
-      jobStore.updateJob(jobId, { progress: progress.percent });
-    });
+    for (const strategy of strategies) {
+      try {
+        await fs.rm(filePath, { force: true }).catch(() => {});
+        await runDownloadAttempt(ytDlpWrap, jobId, strategy.args);
 
-    process.on('error', (error: Error) => {
-      jobStore.updateJob(jobId, { status: 'error', error: error.message });
-    });
-
-    process.on('close', () => {
-      // Check if job wasn't already marked as error
-      const currentJob = jobStore.getJob(jobId);
-      if (currentJob?.status !== 'error') {
         jobStore.updateJob(jobId, {
           status: 'completed',
           file: filename,
           file_url: `/api/media/file/${jobId}`,
           progress: 100,
         });
+        return;
+      } catch (error: any) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+        if (strategy.label !== 'ios') {
+          jobStore.updateJob(jobId, {
+            status: 'processing',
+            progress: 0,
+            error: `${strategy.label} attempt failed: ${lastError.message}`,
+          });
+        } else {
+          jobStore.updateJob(jobId, { status: 'error', error: lastError.message });
+          throw lastError;
+        }
       }
-    });
-
-    try {
-      await process;
-    } catch (error: any) {
-      const message = error?.message || 'Download failed';
-      jobStore.updateJob(jobId, { status: 'error', error: message });
-      throw error;
     }
+
+    throw lastError ?? new Error('Download failed');
   } catch (error: any) {
-    jobStore.updateJob(jobId, { status: 'error', error: error.message });
+    const message = error?.message || 'Download failed';
+    jobStore.updateJob(jobId, { status: 'error', error: message });
   }
 }
 
