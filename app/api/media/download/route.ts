@@ -24,7 +24,23 @@ async function processDownload(jobId: string, url: string, formatId: string) {
     const filePath = path.join(DOWNLOAD_DIR, filename);
 
     const formatStr = formatId ? `${formatId}+bestaudio/best` : 'best';
-    const args = ['-f', formatStr, '--merge-output-format', 'mp4', '-o', filePath, url];
+    const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+    const args = [
+      '-f',
+      formatStr,
+      '--merge-output-format',
+      'mp4',
+      '--user-agent',
+      userAgent,
+      '--extractor-args',
+      'youtube:player_client=web,web_embedded',
+      '--add-header',
+      'Accept-Language: en-US,en;q=0.9',
+      '--no-warnings',
+      '-o',
+      filePath,
+      url,
+    ];
 
     jobStore.updateJob(jobId, { status: 'processing', progress: 0 });
 
@@ -52,7 +68,13 @@ async function processDownload(jobId: string, url: string, formatId: string) {
       }
     });
 
-    await process;
+    try {
+      await process;
+    } catch (error: any) {
+      const message = error?.message || 'Download failed';
+      jobStore.updateJob(jobId, { status: 'error', error: message });
+      throw error;
+    }
   } catch (error: any) {
     jobStore.updateJob(jobId, { status: 'error', error: error.message });
   }
