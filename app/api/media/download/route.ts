@@ -189,19 +189,32 @@ export async function POST(request: Request) {
     }
 
     if (hasExternalMediaBackend()) {
-      const backendResponse = await callMediaBackend<{ ok: boolean; success?: boolean; job_id?: string; error?: string; code?: string }>(
-        '/api/media/download',
-        { url, format_id },
-      );
+      try {
+        const backendResponse = await callMediaBackend<{ ok: boolean; success?: boolean; job_id?: string; error?: string; code?: string }>(
+          '/api/media/download',
+          { url, format_id },
+        );
 
-      if (!backendResponse?.ok && !backendResponse?.success) {
-        throw new Error(backendResponse?.error || 'External backend rejected the download request.');
+        if (!backendResponse?.ok && !backendResponse?.success) {
+          throw new Error(backendResponse?.error || 'External backend rejected the download request.');
+        }
+
+        return NextResponse.json({
+          success: true,
+          job_id: backendResponse.job_id,
+        });
+      } catch (backendError) {
+        console.warn('[download-route] external backend failed', {
+          route: 'download',
+          runtime: process.env.NEXT_RUNTIME || 'node',
+          error: backendError instanceof Error ? backendError.message : backendError,
+        });
+        return NextResponse.json({
+          ok: false,
+          error: 'The configured media backend could not complete the request. Please try again later or reconfigure the backend.',
+          code: 'backend_unavailable',
+        }, { status: 502 });
       }
-
-      return NextResponse.json({
-        success: true,
-        job_id: backendResponse.job_id,
-      });
     }
 
     if (isVercelServerlessRuntime()) {

@@ -13,33 +13,41 @@ export async function POST(request: Request) {
       url: typeof url === 'string' ? url : undefined,
     });
 
-    if (hasExternalMediaBackend()) {
-      const backendInfo = await callMediaBackend<{
-        ok: boolean;
-        title?: string;
-        thumbnail?: string;
-        duration?: number;
-        platform?: string;
-        formats?: Array<{ format_id: string; ext: string; quality: string; filesize?: number }>;
-        error?: string;
-        code?: string;
-        details?: unknown;
-      }>(
-        '/api/info',
-        { url: url ?? '' },
-      );
+    try {
+      if (hasExternalMediaBackend()) {
+        const backendInfo = await callMediaBackend<{
+          ok: boolean;
+          title?: string;
+          thumbnail?: string;
+          duration?: number;
+          platform?: string;
+          formats?: Array<{ format_id: string; ext: string; quality: string; filesize?: number }>;
+          error?: string;
+          code?: string;
+          details?: unknown;
+        }>(
+          '/api/info',
+          { url: url ?? '' },
+        );
 
-      if (!backendInfo?.ok) {
-        throw new ExtractorError(backendInfo?.error || 'External backend returned an error.', { code: backendInfo?.code || 'backend_error', status: 502, details: backendInfo?.details });
+        if (!backendInfo?.ok) {
+          throw new ExtractorError(backendInfo?.error || 'External backend returned an error.', { code: backendInfo?.code || 'backend_error', status: 502, details: backendInfo?.details });
+        }
+
+        return NextResponse.json({
+          ok: true,
+          title: backendInfo.title || 'Unknown',
+          thumbnail: backendInfo.thumbnail || '',
+          duration: backendInfo.duration || 0,
+          platform: backendInfo.platform || 'Unknown',
+          formats: backendInfo.formats || [],
+        });
       }
-
-      return NextResponse.json({
-        ok: true,
-        title: backendInfo.title || 'Unknown',
-        thumbnail: backendInfo.thumbnail || '',
-        duration: backendInfo.duration || 0,
-        platform: backendInfo.platform || 'Unknown',
-        formats: backendInfo.formats || [],
+    } catch (backendError) {
+      console.warn('[info-route] external backend failed, falling back to local extractor', {
+        route: 'info',
+        runtime: process.env.NEXT_RUNTIME || 'node',
+        error: backendError instanceof Error ? backendError.message : backendError,
       });
     }
 
