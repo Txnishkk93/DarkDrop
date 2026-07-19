@@ -5,8 +5,16 @@ import path from 'path';
 
 let ytDlp: YTDlpWrap | null = null;
 
+export function isVercelServerlessRuntime(): boolean {
+  return Boolean(process.env.VERCEL || process.env.VERCEL_ENV || process.env.NEXT_RUNTIME);
+}
+
 export async function getYtDlpWrap(): Promise<YTDlpWrap> {
   if (ytDlp) return ytDlp;
+
+  if (isVercelServerlessRuntime()) {
+    throw new Error('yt-dlp binary execution is not supported in this Vercel serverless deployment. Use an external download backend.');
+  }
 
   const isWin = os.platform() === 'win32';
   const binaryPath = path.join(os.tmpdir(), isWin ? 'yt-dlp.exe' : 'yt-dlp');

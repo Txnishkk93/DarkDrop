@@ -1,6 +1,6 @@
 import axios from "axios";
 
-const API_BASE = "";
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "";
 
 const api = axios.create({
   baseURL: API_BASE,
@@ -10,17 +10,29 @@ const api = axios.create({
   timeout: 180000,
 });
 
+function normalizeApiError(error: unknown): Error {
+  if (axios.isAxiosError(error)) {
+    const payload = error.response?.data;
+    const message = payload?.error || payload?.message || error.message || "Request failed";
+    const apiError = new Error(message);
+    (apiError as Error & { status?: number; code?: string; details?: unknown }).status = error.response?.status;
+    (apiError as Error & { code?: string; details?: unknown }).code = payload?.code || "request_failed";
+    (apiError as Error & { details?: unknown }).details = payload?.details;
+    return apiError;
+  }
+
+  if (error instanceof Error) {
+    return error;
+  }
+
+  return new Error("Request failed");
+}
+
 // Response interceptor
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response) {
-      throw new Error(error.response.data?.error || "Server error");
-    } else if (error.request) {
-      throw new Error("No response from server. Check backend status.");
-    } else {
-      throw new Error(error.message || "Request failed");
-    }
+    throw normalizeApiError(error);
   }
 );
 
@@ -59,7 +71,11 @@ export async function fetchMediaInfo(url: string): Promise<MediaInfo> {
   if (!url.trim()) throw new Error("URL is required");
 
   const response = await api.post("/api/info", { url: url.trim() });
-  return response.data;
+  if (!response.data?.ok) {
+    throw new Error(response.data?.error || "Failed to fetch media info");
+  }
+
+  return response.data as MediaInfo;
 }
 
 export async function startDownload(

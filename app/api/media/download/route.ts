@@ -4,8 +4,9 @@ import path from 'path';
 import fs from 'fs/promises';
 import { v4 as uuidv4 } from 'uuid';
 import { jobStore } from '@/lib/server/jobStore';
-import { getYtDlpWrap } from '@/lib/server/ytDlp';
+import { getYtDlpWrap, isVercelServerlessRuntime } from '@/lib/server/ytDlp';
 import { DOWNLOAD_DIR } from '@/lib/server/downloadDir';
+import { callMediaBackend, hasExternalMediaBackend } from '@/lib/server/mediaBackend';
 
 export const maxDuration = 120; // Allow longer execution on Vercel
 
@@ -173,11 +174,42 @@ async function processDownload(jobId: string, url: string, formatId: string) {
 
 export async function POST(request: Request) {
   try {
-    const body = await request.json();
-    const { url, format_id } = body;
+    const body = await request.json().catch(() => ({}));
+    const { url, format_id } = body as { url?: string; format_id?: string };
+
+    console.info('[download-route] request', {
+      route: 'download',
+      runtime: process.env.NEXT_RUNTIME || 'node',
+      url: typeof url === 'string' ? url : undefined,
+      format_id,
+    });
 
     if (!url) {
-      return NextResponse.json({ error: 'URL is required' }, { status: 400 });
+      return NextResponse.json({ ok: false, error: 'URL is required', code: 'invalid_url' }, { status: 400 });
+    }
+
+    if (hasExternalMediaBackend()) {
+      const backendResponse = await callMediaBackend<{ ok: boolean; success?: boolean; job_id?: string; error?: string; code?: string }>(
+        '/api/media/download',
+        { url, format_id },
+      );
+
+      if (!backendResponse?.ok && !backendResponse?.success) {
+        throw new Error(backendResponse?.error || 'External backend rejected the download request.');
+      }
+
+      return NextResponse.json({
+        success: true,
+        job_id: backendResponse.job_id,
+      });
+    }
+
+    if (isVercelServerlessRuntime()) {
+      return NextResponse.json({
+        ok: false,
+        error: 'Download execution is not supported from this Vercel serverless deployment. Configure an external downloader service.',
+        code: 'unsupported_runtime',
+      }, { status: 503 });
     }
 
     const jobId = uuidv4();
@@ -185,10 +217,16 @@ export async function POST(request: Request) {
 
     // Run the download process in the background
     // Vercel's waitUntil prevents the function from shutting down immediately
-    waitUntil(processDownload(jobId, url, format_id));
+    waitUntil(processDownload(jobId, url, format_id ?? ''));
 
     return NextResponse.json({ success: true, job_id: jobId });
   } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    console.error('[download-route] failed', {
+      route: 'download',
+      runtime: process.env.NEXT_RUNTIME || 'node',
+      error: error?.message,
+      stack: error instanceof Error ? error.stack : undefined,
+    });
+    return NextResponse.json({ ok: false, error: error.message, code: 'download_failed' }, { status: 500 });
   }
 }

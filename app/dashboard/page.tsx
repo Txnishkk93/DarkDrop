@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Link2, Loader2, Download } from "lucide-react";
+import { Link2, Loader2, Download, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
@@ -19,6 +19,7 @@ export default function DashboardPage() {
   const [url, setUrl] = useState("");
   const [loading, setLoading] = useState(false);
   const [mediaInfo, setMediaInfo] = useState<MediaInfo | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const handleFetchInfo = async () => {
     if (!url.trim()) {
@@ -28,14 +29,18 @@ export default function DashboardPage() {
 
     setLoading(true);
     setMediaInfo(null);
+    setErrorMessage(null);
 
     try {
       const info = await fetchMediaInfo(url);
       setMediaInfo(info);
+      setErrorMessage(null);
       toast.success("Media info loaded");
     } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to fetch media info.";
+      setErrorMessage(message);
       console.error("Error fetching info:", error);
-      toast.error(error instanceof Error ? error.message : "Failed to fetch media info. Make sure the URL is valid.");
+      toast.error(message);
     } finally {
       setLoading(false);
     }
@@ -84,6 +89,18 @@ export default function DashboardPage() {
               </div>
             </CardContent>
           </Card>
+
+          {errorMessage && (
+            <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive space-y-3">
+              <div className="flex items-start gap-2">
+                <AlertCircle className="h-4 w-4 mt-0.5" />
+                <span>{errorMessage}</span>
+              </div>
+              <Button variant="outline" size="sm" onClick={handleFetchInfo} disabled={loading || !url.trim()}>
+                Retry
+              </Button>
+            </div>
+          )}
 
           {/* Media Info */}
           {mediaInfo && (
