@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { Info } from "lucide-react";
 import { Link2, Loader2, Download, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -95,6 +96,10 @@ export default function DashboardPage() {
               <div className="flex items-start gap-2">
                 <AlertCircle className="h-4 w-4 mt-0.5" />
                 <span>{errorMessage}</span>
+              </div>
+              <div className="rounded-lg border border-destructive/20 bg-background/70 p-3 text-xs text-foreground/80 flex items-start gap-2">
+                <Info className="h-4 w-4 mt-0.25" />
+                <span>To enable this feature in a self-hosted environment, set ALLOW_YOUTUBE_EXTRACTION=true and ensure you are using a compliant backend or authorized extractor.</span>
               </div>
               <Button variant="outline" size="sm" onClick={handleFetchInfo} disabled={loading || !url.trim()}>
                 Retry
