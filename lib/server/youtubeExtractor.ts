@@ -1,5 +1,9 @@
 import ytdl from '@distube/ytdl-core';
 import { getYouTubeRestrictionMessage, isYouTubeExtractionDisabled } from '@/lib/server/extractionPolicy';
+import { ExtractorError } from '@/lib/server/errors';
+import { getRequestTimeoutMs } from '@/lib/server/reliability';
+
+export { ExtractorError } from '@/lib/server/errors';
 
 export interface ExtractedMediaInfo {
   title: string;
@@ -12,22 +16,6 @@ export interface ExtractedMediaInfo {
     quality: string;
     filesize?: number;
   }>;
-}
-
-export class ExtractorError extends Error {
-  code: string;
-  status: number;
-  details?: unknown;
-  cause?: unknown;
-
-  constructor(message: string, options: { code: string; status?: number; details?: unknown; cause?: unknown } = { code: 'extraction_failed' }) {
-    super(message);
-    this.name = 'ExtractorError';
-    this.code = options.code;
-    this.status = options.status ?? 500;
-    this.details = options.details;
-    this.cause = options.cause;
-  }
 }
 
 function isValidHttpUrl(rawUrl: string): boolean {
@@ -46,15 +34,6 @@ function isYouTubeUrl(rawUrl: string): boolean {
   } catch {
     return false;
   }
-}
-
-function buildRequestHeaders() {
-  return {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-    'Accept-Language': 'en-US,en;q=0.9',
-    Referer: 'https://www.youtube.com/',
-    Origin: 'https://www.youtube.com',
-  };
 }
 
 function normalizeFormats(info: Awaited<ReturnType<typeof ytdl.getInfo>>): ExtractedMediaInfo['formats'] {
@@ -94,47 +73,98 @@ function normalizeFormats(info: Awaited<ReturnType<typeof ytdl.getInfo>>): Extra
   });
 }
 
-function classifyExtractionError(error: unknown, fallbackMessage: string): { code: string; status: number; message: string } {
-  const message = error instanceof Error ? error.message : String(error || fallbackMessage);
-  const lower = message.toLowerCase();
-
-  if (lower.includes('sign in to confirm') || lower.includes('bot') || lower.includes('robot')) {
-    return {
-      code: 'bot_blocked',
-      status: 429,
-      message: 'YouTube blocked this request from the current hosting environment. Try again later or use a different backend.',
-    };
+function getProperty(obj: unknown, key: string): unknown {
+  if (obj && typeof obj === 'object' && key in obj) {
+    return (obj as Record<string, unknown>)[key];
   }
+  return undefined;
+}
 
-  if (lower.includes('429') || lower.includes('too many requests') || lower.includes('rate limit')) {
-    return {
+function getRetryAfterMs(error: unknown): number | undefined {
+  if (!error || typeof error !== 'object') return undefined;
+  const res = getProperty(error, 'response');
+  const headers = (getProperty(error, 'headers') ?? (res ? getProperty(res, 'headers') : undefined)) as any;
+  const raw = headers && (typeof headers.get === 'function' ? headers.get('retry-after') : headers['retry-after']);
+  if (typeof raw !== 'string') return undefined;
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.min(seconds * 1000, 5 * 60 * 1000);
+  const date = Date.parse(raw);
+  return Number.isNaN(date) ? undefined : Math.min(Math.max(date - Date.now(), 0), 5 * 60 * 1000);
+}
+
+function classifyExtractionError(error: unknown): ExtractorError {
+  const message = error instanceof Error ? error.message : '';
+  const lower = message.toLowerCase();
+  const res = getProperty(error, 'response');
+  const status = error && typeof error === 'object'
+    ? Number(getProperty(error, 'statusCode') ?? getProperty(error, 'status') ?? (res ? getProperty(res, 'status') : undefined)) || 0
+    : 0;
+  const code = error && typeof error === 'object' ? String(getProperty(error, 'code') ?? '') : '';
+  const retryAfter = getRetryAfterMs(error);
+
+  if (status === 429 || lower.includes('too many requests') || lower.includes('rate limit')) {
+    return new ExtractorError('The source is rate-limiting requests. Please wait before trying again.', {
       code: 'upstream_rate_limited',
       status: 429,
-      message: 'YouTube is rate-limiting requests from this environment.',
-    };
+      retryable: true,
+      retryAfterMs: retryAfter,
+    });
   }
-
-  if (lower.includes('404') || lower.includes('not found') || lower.includes('unavailable')) {
-    return {
+  if (status === 403 || lower.includes('sign in to confirm') || lower.includes('request was blocked')) {
+    return new ExtractorError('The source denied this request. It may be restricted or inaccessible from this service.', {
+      code: 'access_denied',
+      status: 403,
+    });
+  }
+  if (lower.includes('age restricted') || lower.includes('sign in to view')) {
+    return new ExtractorError('This video is age-restricted or requires account verification.', {
+      code: 'access_denied',
+      status: 403,
+    });
+  }
+  if (
+    status === 404 ||
+    lower.includes('video unavailable') ||
+    lower.includes('private video') ||
+    lower.includes('not found') ||
+    lower.includes('failed to find any playable formats') ||
+    lower.includes('no playable format')
+  ) {
+    return new ExtractorError('This media is unavailable or cannot be accessed.', {
       code: 'content_unavailable',
       status: 404,
-      message: 'The requested content could not be found or is unavailable.',
-    };
+    });
   }
-
-  if (lower.includes('timed out') || lower.includes('econnreset') || lower.includes('socket hang up')) {
-    return {
-      code: 'timeout',
+  if (status >= 500 && status <= 599) {
+    return new ExtractorError('The source is temporarily unavailable. Please try again later.', {
+      code: 'upstream_failure',
+      status: 502,
+      retryable: true,
+    });
+  }
+  if (
+    lower.includes('timed out') ||
+    lower.includes('timeout') ||
+    code === 'ETIMEDOUT' ||
+    code === 'ECONNRESET' ||
+    code === 'ECONNREFUSED' ||
+    code === 'EAI_AGAIN' ||
+    lower.includes('socket hang up')
+  ) {
+    return new ExtractorError('The source request timed out or could not connect. Please try again.', {
+      code: 'network_error',
       status: 504,
-      message: 'The upstream request timed out.',
-    };
+      retryable: true,
+    });
   }
-
-  return {
+  return new ExtractorError('Media information could not be retrieved. Confirm the URL is public and try again.', {
     code: 'extraction_failed',
-    status: 500,
-    message: fallbackMessage,
-  };
+    status: 502,
+  });
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export async function extractMediaInfo(url: string): Promise<ExtractedMediaInfo> {
@@ -156,27 +186,30 @@ export async function extractMediaInfo(url: string): Promise<ExtractedMediaInfo>
     throw new ExtractorError(getYouTubeRestrictionMessage(), { code: 'youtube_extraction_disabled', status: 403 });
   }
 
-  try {
-    const info = await ytdl.getInfo(trimmedUrl, {
-      requestOptions: {
-        headers: buildRequestHeaders(),
-      },
-    });
+  let lastError: ExtractorError | undefined;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const info = await ytdl.getInfo(trimmedUrl, {
+        requestOptions: { timeout: getRequestTimeoutMs() },
+      });
 
-    return {
-      title: info.videoDetails?.title || 'Unknown',
-      thumbnail: info.videoDetails?.thumbnails?.[0]?.url || '',
-      duration: Number(info.videoDetails?.lengthSeconds || 0),
-      platform: 'YouTube',
-      formats: normalizeFormats(info),
-    };
-  } catch (error) {
-    const fallbackMessage = error instanceof Error ? error.message : 'Media info extraction failed.';
-    const classification = classifyExtractionError(error, fallbackMessage);
-    throw new ExtractorError(classification.message, {
-      code: classification.code,
-      status: classification.status,
-      cause: error,
-    });
+      return {
+        title: info.videoDetails?.title || 'Unknown',
+        thumbnail: info.videoDetails?.thumbnails?.[0]?.url || '',
+        duration: Number(info.videoDetails?.lengthSeconds || 0),
+        platform: 'YouTube',
+        formats: normalizeFormats(info),
+      };
+    } catch (error) {
+      lastError = classifyExtractionError(error);
+      if (!lastError.retryable || lastError.status === 429 || attempt === 1) throw lastError;
+      const delay = Math.min(500 * 2 ** attempt + Math.random() * 300, 3000);
+      await wait(delay);
+    }
   }
+
+  throw lastError ?? new ExtractorError('Media information could not be retrieved.', {
+    code: 'extraction_failed',
+    status: 502,
+  });
 }

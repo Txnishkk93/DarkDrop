@@ -1,61 +1,92 @@
-import { NextResponse } from 'next/server';
-import { jobStore } from '@/lib/server/jobStore';
-import { DOWNLOAD_DIR } from '@/lib/server/downloadDir';
-import path from 'path';
-import fs from 'fs/promises';
-import { createReadStream } from 'fs';
+import { NextResponse } from "next/server";
+import { createReadStream } from "node:fs";
+import fs from "node:fs/promises";
+import path from "node:path";
+import { errorResponse, ExtractorError, toExtractorError } from "@/lib/server/errors";
+import { DOWNLOAD_DIR } from "@/lib/server/downloadDir";
+import { jobStore } from "@/lib/server/jobStore";
+import { fetchBackendFile, hasExternalMediaBackend } from "@/lib/server/mediaBackend";
+
+function errorResponseFor(error: unknown) {
+  const safeError = toExtractorError(error);
+  return NextResponse.json(errorResponse(safeError), { status: safeError.status });
+}
 
 export async function GET(request: Request, { params }: { params: Promise<{ jobId: string }> }) {
   try {
     const { jobId } = await params;
+    if (!jobId || jobId.length > 200) {
+      throw new ExtractorError("Invalid download job identifier.", { code: "invalid_job_id", status: 400 });
+    }
+
+    if (hasExternalMediaBackend()) {
+      const backendResponse = await fetchBackendFile(jobId, request.signal);
+      const headers = new Headers();
+      for (const name of ["content-type", "content-length", "content-disposition"]) {
+        const value = backendResponse.headers.get(name);
+        if (value) headers.set(name, value);
+      }
+      return new NextResponse(backendResponse.body, { status: backendResponse.status, headers });
+    }
+
     const job = jobStore.getJob(jobId);
-
     if (!job) {
-      return NextResponse.json({ error: 'Job not found' }, { status: 404 });
+      throw new ExtractorError("This download job expired or could not be found. Start it again.", {
+        code: "job_not_found",
+        status: 404,
+      });
+    }
+    if (job.status !== "completed" || !job.file) {
+      throw new ExtractorError("The download file is not ready yet.", {
+        code: "file_not_ready",
+        status: 409,
+        retryable: job.status === "processing" || job.status === "pending",
+      });
     }
 
-    if (job.status !== 'completed' || !job.file) {
-      return NextResponse.json({ error: 'File not ready yet' }, { status: 400 });
+    const filename = path.basename(job.file);
+    if (filename !== job.file || !filename.startsWith(`${jobId}.`)) {
+      throw new ExtractorError("The download file could not be located.", {
+        code: "file_missing",
+        status: 404,
+      });
     }
+    const filePath = path.join(DOWNLOAD_DIR, filename);
 
-    const filePath = path.join(DOWNLOAD_DIR, job.file);
-    
-    // Check if file exists
+    let stats;
     try {
-      await fs.access(filePath);
+      stats = await fs.stat(filePath);
     } catch {
-      return NextResponse.json({ error: 'File not found on disk' }, { status: 404 });
+      jobStore.deleteJob(jobId);
+      throw new ExtractorError("The download file expired or was removed. Start the download again.", {
+        code: "file_missing",
+        status: 404,
+      });
     }
 
-    const stats = await fs.stat(filePath);
-    const data = createReadStream(filePath);
-    
-    // Node.js readable streams can be mapped to Web Streams for Next.js responses
-    const webStream = new ReadableStream({
+    const fileStream = createReadStream(filePath);
+    const webStream = new ReadableStream<Uint8Array>({
       start(controller) {
-        data.on('data', (chunk) => controller.enqueue(chunk));
-        data.on('end', () => {
-          controller.close();
-          // Clean up the file after streaming finishes
-          fs.unlink(filePath).catch(console.error);
+        fileStream.on("data", (chunk: Buffer) => controller.enqueue(new Uint8Array(chunk)));
+        fileStream.on("end", () => controller.close());
+        fileStream.on("error", (error) => {
           jobStore.deleteJob(jobId);
+          controller.error(error);
         });
-        data.on('error', (err) => controller.error(err));
       },
       cancel() {
-        data.destroy();
-      }
+        fileStream.destroy();
+      },
     });
 
     return new NextResponse(webStream, {
       headers: {
-        'Content-Disposition': `attachment; filename="${job.file}"`,
-        'Content-Type': 'application/octet-stream',
-        'Content-Length': stats.size.toString(),
+        "Content-Disposition": `attachment; filename="${filename}"`,
+        "Content-Type": "application/octet-stream",
+        "Content-Length": stats.size.toString(),
       },
     });
-
-  } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+  } catch (error) {
+    return errorResponseFor(error);
   }
 }

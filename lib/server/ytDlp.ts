@@ -6,7 +6,7 @@ import path from 'path';
 let ytDlp: YTDlpWrap | null = null;
 
 export function isVercelServerlessRuntime(): boolean {
-  return Boolean(process.env.VERCEL || process.env.VERCEL_ENV || process.env.NEXT_RUNTIME);
+  return Boolean(process.env.VERCEL || process.env.VERCEL_ENV || process.env.AWS_LAMBDA_FUNCTION_NAME);
 }
 
 export async function getYtDlpWrap(): Promise<YTDlpWrap> {

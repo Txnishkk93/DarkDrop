@@ -1,25 +1,19 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import { Download, Loader2, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ProgressBar } from "@/components/ProgressBar";
 import { toast } from "sonner";
 import {
   startDownload,
+  getDownloadProgress,
   downloadFileToDisk,
+  ApiError,
   type MediaFormat,
   type ProgressResponse,
   formatFileSize,
 } from "@/lib/api";
-
-async function getProgress(jobId: string): Promise<ProgressResponse> {
-  const response = await fetch(`/api/media/progress/${jobId}`);
-  if (!response.ok) {
-    throw new Error("Failed to fetch progress");
-  }
-  return response.json();
-}
 
 interface FormatRowProps {
   url: string;
@@ -46,38 +40,61 @@ export function FormatRow({ url, format }: FormatRowProps) {
         throw new Error(response.error || "Failed to start download");
       }
     } catch (error) {
-      console.error("Error starting download:", error);
       toast.error(error instanceof Error ? error.message : "Failed to start download");
       setDownloading(false);
       setProgress(null);
     }
   };
 
-  const pollProgress = useCallback(async () => {
-    if (!jobId) return;
-
-    try {
-      const progressData = await getProgress(jobId);
-      setProgress(progressData);
-
-      if (progressData.status === "completed") {
-        setDownloading(false);
-        toast.success(`Download complete for ${format.quality}!`);
-      } else if (progressData.status === "error") {
-        setDownloading(false);
-        toast.error(progressData.error || `Download failed for ${format.quality}`);
-      }
-    } catch (error) {
-      console.error("Error polling progress:", error);
-      // Don't stop on polling errors, let it retry
-    }
-  }, [jobId, format.quality]);
-
   useEffect(() => {
     if (!jobId || !downloading) return;
-    const interval = setInterval(pollProgress, 1000);
-    return () => clearInterval(interval);
-  }, [jobId, downloading, pollProgress]);
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    let failures = 0;
+
+    const poll = async () => {
+      try {
+        const progressData = await getDownloadProgress(jobId);
+        if (cancelled) return;
+        failures = 0;
+        setProgress(progressData);
+
+        if (progressData.status === "completed") {
+          setDownloading(false);
+          toast.success(`Download complete for ${format.quality}!`);
+          return;
+        }
+        if (progressData.status === "error") {
+          setDownloading(false);
+          toast.error(progressData.error || `Download failed for ${format.quality}`);
+          return;
+        }
+        timer = setTimeout(poll, 2500);
+      } catch (error) {
+        if (cancelled) return;
+        if (error instanceof ApiError && !error.retryable) {
+          setProgress({
+            status: "error",
+            progress: 0,
+            error: error.message,
+            code: error.code,
+            retryable: false,
+          });
+          setDownloading(false);
+          toast.error(error.message);
+          return;
+        }
+        failures += 1;
+        timer = setTimeout(poll, Math.min(2000 * 2 ** Math.min(failures - 1, 3), 15000));
+      }
+    };
+
+    timer = setTimeout(poll, 1500);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [jobId, downloading, format.quality]);
 
   const handleDownloadFile = async () => {
     if (progress?.file_url) {
@@ -85,8 +102,8 @@ export function FormatRow({ url, format }: FormatRowProps) {
       try {
         await downloadFileToDisk(progress.file_url);
         toast.success(`File saved to your computer!`);
-      } catch (err: any) {
-        toast.error(err.message || "Failed to save file.");
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "Failed to save file.");
       } finally {
         setSavingBlob(false);
       }

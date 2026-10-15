@@ -21,18 +21,6 @@ export default function DashboardPage() {
   const [mediaInfo, setMediaInfo] = useState<MediaInfo | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  const getUserFriendlyMessage = (message: string) => {
-    if (message.includes('backend') || message.includes('upstream')) {
-      return 'We could not reach the configured extraction service. Please try again in a moment or reconfigure the backend.';
-    }
-
-    if (message.includes('bot') || message.includes('blocked')) {
-      return 'The upstream service blocked the request. Please try again later or use a different backend.';
-    }
-
-    return message;
-  };
-
   const handleFetchInfo = async () => {
     if (!url.trim()) {
       toast.error("Please enter a URL");
@@ -50,8 +38,7 @@ export default function DashboardPage() {
       toast.success("Media info loaded");
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to fetch media info.";
-      setErrorMessage(getUserFriendlyMessage(message));
-      console.error("Error fetching info:", error);
+      setErrorMessage(message);
       toast.error(message);
     } finally {
       setLoading(false);

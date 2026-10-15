@@ -10,15 +10,46 @@ const api = axios.create({
   timeout: 180000,
 });
 
+export class ApiError extends Error {
+  code: string;
+  status?: number;
+  retryable: boolean;
+
+  constructor(message: string, options: { code?: string; status?: number; retryable?: boolean } = {}) {
+    super(message);
+    this.name = "ApiError";
+    this.code = options.code || "request_failed";
+    this.status = options.status;
+    this.retryable = options.retryable ?? false;
+  }
+}
+
+function apiErrorFromPayload(payload: unknown, status?: number): ApiError {
+  const data = payload && typeof payload === "object" ? payload as Record<string, unknown> : {};
+  return new ApiError(
+    typeof data.error === "string" ? data.error : "The request could not be completed.",
+    {
+      code: typeof data.code === "string" ? data.code : "request_failed",
+      status,
+      retryable: data.retryable === true,
+    },
+  );
+}
+
 function normalizeApiError(error: unknown): Error {
   if (axios.isAxiosError(error)) {
     const payload = error.response?.data;
-    const message = payload?.error || payload?.message || error.message || "Request failed";
-    const apiError = new Error(message);
-    (apiError as Error & { status?: number; code?: string; details?: unknown }).status = error.response?.status;
-    (apiError as Error & { code?: string; details?: unknown }).code = payload?.code || "request_failed";
-    (apiError as Error & { details?: unknown }).details = payload?.details;
-    return apiError;
+    if (error.response) return apiErrorFromPayload(payload, error.response.status);
+    if (error.code === "ECONNABORTED" || error.code === "ETIMEDOUT") {
+      return new ApiError("The request timed out. Please try again.", {
+        code: "timeout",
+        retryable: true,
+      });
+    }
+    return new ApiError("The server could not be reached. Check your connection and try again.", {
+      code: "network_error",
+      retryable: true,
+    });
   }
 
   if (error instanceof Error) {
@@ -57,6 +88,9 @@ export interface ProgressResponse {
   progress: number;
   file_url?: string;
   error?: string;
+  code?: string;
+  errorCode?: string;
+  retryable?: boolean;
 }
 
 export interface DownloadResponse {
@@ -72,7 +106,7 @@ export async function fetchMediaInfo(url: string): Promise<MediaInfo> {
 
   const response = await api.post("/api/info", { url: url.trim() });
   if (!response.data?.ok) {
-    throw new Error(response.data?.error || "Failed to fetch media info");
+    throw apiErrorFromPayload(response.data);
   }
 
   return response.data as MediaInfo;
@@ -84,16 +118,17 @@ export async function startDownload(
 ): Promise<{ success: boolean; job_id?: string; error?: string }> {
   if (!url.trim()) throw new Error("URL is required");
   
-  console.log('[api] Starting download:', { url, format_id });
-  
   const response = await api.post("/api/media/download", {
     url: url.trim(),
     format_id
   });
-  
-  console.log('[api] Download response:', response.data);
-  
+  if (!response.data?.success) throw apiErrorFromPayload(response.data);
   return response.data;
+}
+
+export async function getDownloadProgress(jobId: string): Promise<ProgressResponse> {
+  const response = await api.get(`/api/media/progress/${encodeURIComponent(jobId)}`);
+  return response.data as ProgressResponse;
 }
 
 export async function checkHealth(): Promise<{ status: string }> {
@@ -111,12 +146,17 @@ export function getDownloadUrl(jobId: string): string {
 export async function downloadFileToDisk(fileUrl: string): Promise<void> {
   const response = await fetch(fileUrl);
   if (!response.ok) {
-    let message = `Download failed (${response.status})`;
+    let failure: ApiError = new ApiError("The download file could not be retrieved. Start the download again.", {
+      code: "file_download_failed",
+      status: response.status,
+      retryable: response.status >= 500,
+    });
     try {
-      const body = await response.json();
-      if (body?.error) message = body.error;
-    } catch {}
-    throw new Error(message);
+      failure = apiErrorFromPayload(await response.json(), response.status);
+    } catch {
+      throw failure;
+    }
+    throw failure;
   }
   const disposition = response.headers.get("Content-Disposition");
   const match = disposition?.match(/filename="?([^"]+)"?/i);

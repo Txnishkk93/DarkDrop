@@ -1,18 +1,67 @@
-import { NextResponse } from 'next/server';
-import { waitUntil } from '@vercel/functions';
-import path from 'path';
-import fs from 'fs/promises';
-import { v4 as uuidv4 } from 'uuid';
-import { jobStore } from '@/lib/server/jobStore';
-import { getYtDlpWrap, isVercelServerlessRuntime } from '@/lib/server/ytDlp';
-import { DOWNLOAD_DIR } from '@/lib/server/downloadDir';
-import { callMediaBackend, hasExternalMediaBackend } from '@/lib/server/mediaBackend';
+import { NextResponse } from "next/server";
+import { waitUntil } from "@vercel/functions";
+import { createHash } from "node:crypto";
+import path from "node:path";
+import fs from "node:fs/promises";
+import { v4 as uuidv4 } from "uuid";
+import { errorResponse, ExtractorError, toExtractorError } from "@/lib/server/errors";
+import { DOWNLOAD_DIR } from "@/lib/server/downloadDir";
+import { jobStore } from "@/lib/server/jobStore";
+import { callMediaBackend, hasExternalMediaBackend } from "@/lib/server/mediaBackend";
+import {
+  assertOutsideRateLimitCooldown,
+  getMaxConcurrentDownloads,
+  getRequestTimeoutMs,
+  normalizeAndValidateMediaUrl,
+  startRateLimitCooldown,
+} from "@/lib/server/reliability";
+import { getYtDlpWrap, isVercelServerlessRuntime } from "@/lib/server/ytDlp";
 
-export const maxDuration = 120; // Allow longer execution on Vercel
+export const maxDuration = 120;
 
-// Ensure the download directory exists
-async function ensureDir() {
-  await fs.mkdir(DOWNLOAD_DIR, { recursive: true }).catch(() => {});
+function classifyDownloadError(error: unknown): ExtractorError {
+  if (error instanceof ExtractorError) return error;
+  const message = error instanceof Error ? error.message : "";
+  const lower = message.toLowerCase();
+  const status = error && typeof error === "object" ? Number(Reflect.get(error, "statusCode")) : 0;
+
+  if (status === 429 || lower.includes("http error 429") || lower.includes("too many requests")) {
+    return new ExtractorError("The source is rate-limiting downloads. Please wait before trying again.", {
+      code: "upstream_rate_limited",
+      status: 429,
+      retryable: true,
+    });
+  }
+  if (status === 403 || lower.includes("http error 403") || lower.includes("forbidden")) {
+    return new ExtractorError("The source denied this download. It may be restricted or inaccessible from this service.", {
+      code: "access_denied",
+      status: 403,
+    });
+  }
+  if (status === 404 || lower.includes("video unavailable") || lower.includes("private video") || lower.includes("not available")) {
+    return new ExtractorError("This media is unavailable or cannot be accessed.", {
+      code: "content_unavailable",
+      status: 404,
+    });
+  }
+  if (status >= 500 && status <= 599 || lower.includes("http error 5")) {
+    return new ExtractorError("The source is temporarily unavailable. Please try again later.", {
+      code: "upstream_failure",
+      status: 502,
+      retryable: true,
+    });
+  }
+  if (/timed? ?out|timeout|econnreset|econnrefused|eai_again|socket hang up/i.test(lower)) {
+    return new ExtractorError("The download timed out or could not connect. Please try again.", {
+      code: "network_error",
+      status: 504,
+      retryable: true,
+    });
+  }
+  return new ExtractorError("The download could not be completed. Confirm the media is public and try again.", {
+    code: "download_failed",
+    status: 502,
+  });
 }
 
 async function runDownloadAttempt(
@@ -20,11 +69,11 @@ async function runDownloadAttempt(
   jobId: string,
   args: string[],
 ) {
-  const process = ytDlpWrap.exec(args);
+  const signal = AbortSignal.timeout(Math.max(getRequestTimeoutMs(), 2 * 60 * 1000));
+  const process = ytDlpWrap.exec(args, undefined, signal);
 
   return await new Promise<void>((resolve, reject) => {
     let settled = false;
-
     const finish = (callback: () => void) => {
       if (!settled) {
         settled = true;
@@ -32,214 +81,159 @@ async function runDownloadAttempt(
       }
     };
 
-    process.on('progress', (progress: any) => {
-      if (typeof progress?.percent === 'number') {
+    process.on("progress", (progress) => {
+      if (typeof progress?.percent === "number") {
         jobStore.updateJob(jobId, { progress: progress.percent });
       }
     });
-
-    process.on('error', (error: Error) => {
-      finish(() => reject(error));
-    });
-
-    process.on('close', (code: number | null) => {
-      if (code === 0) {
-        finish(() => resolve());
-      } else {
-        finish(() => reject(new Error(`Download failed with exit code ${code ?? 'unknown'}`)));
-      }
+    process.on("error", (error) => finish(() => reject(error)));
+    process.on("close", (code) => {
+      if (code === 0) finish(resolve);
+      else finish(() => reject(new Error(`Downloader exited with code ${code ?? "unknown"}.`)));
     });
   });
 }
 
 async function processDownload(jobId: string, url: string, formatId: string) {
+  let filePath: string | undefined;
   try {
-    await ensureDir();
+    await fs.mkdir(DOWNLOAD_DIR, { recursive: true });
     const ytDlpWrap = await getYtDlpWrap();
+    const filename = `${jobId}.mp4`;
+    filePath = path.join(DOWNLOAD_DIR, filename);
 
-    const ext = 'mp4';
-    const filename = `${jobId}.${ext}`;
-    const filePath = path.join(DOWNLOAD_DIR, filename);
-    const formatStr = formatId ? `${formatId}+bestaudio/best` : 'best';
-    const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
-    const strategies = [
-      {
-        label: 'web',
-        args: [
-          '-f',
-          formatStr,
-          '--merge-output-format',
-          'mp4',
-          '--user-agent',
-          userAgent,
-          '--extractor-args',
-          'youtube:player_client=web,web_embedded',
-          '--add-header',
-          'Referer: https://www.youtube.com/',
-          '--add-header',
-          'Origin: https://www.youtube.com',
-          '--add-header',
-          'Accept-Language: en-US,en;q=0.9',
-          '--no-warnings',
-          '-o',
-          filePath,
-          url,
-        ],
-      },
-      {
-        label: 'android',
-        args: [
-          '-f',
-          formatStr,
-          '--merge-output-format',
-          'mp4',
-          '--user-agent',
-          userAgent,
-          '--extractor-args',
-          'youtube:player_client=android',
-          '--add-header',
-          'Referer: https://www.youtube.com/',
-          '--add-header',
-          'Origin: https://www.youtube.com',
-          '--add-header',
-          'Accept-Language: en-US,en;q=0.9',
-          '--no-warnings',
-          '-o',
-          filePath,
-          url,
-        ],
-      },
-      {
-        label: 'ios',
-        args: [
-          '-f',
-          formatStr,
-          '--merge-output-format',
-          'mp4',
-          '--user-agent',
-          userAgent,
-          '--extractor-args',
-          'youtube:player_client=ios',
-          '--add-header',
-          'Referer: https://www.youtube.com/',
-          '--add-header',
-          'Origin: https://www.youtube.com',
-          '--add-header',
-          'Accept-Language: en-US,en;q=0.9',
-          '--no-warnings',
-          '-o',
-          filePath,
-          url,
-        ],
-      },
+    // The chosen format is passed through unchanged; no platform or format fallback is attempted.
+    const args = [
+      "--no-playlist",
+      "--socket-timeout",
+      String(Math.ceil(getRequestTimeoutMs() / 1000)),
+      "--retries",
+      "1",
+      "--fragment-retries",
+      "1",
+      "-f",
+      formatId,
+      "--merge-output-format",
+      "mp4",
+      "--no-warnings",
+      "-o",
+      filePath,
+      url,
     ];
 
-    jobStore.updateJob(jobId, { status: 'processing', progress: 0 });
-
-    let lastError: Error | undefined;
-
-    for (const strategy of strategies) {
+    jobStore.updateJob(jobId, { status: "processing", progress: 0 });
+    for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
-        await fs.rm(filePath, { force: true }).catch(() => {});
-        await runDownloadAttempt(ytDlpWrap, jobId, strategy.args);
-
+        await runDownloadAttempt(ytDlpWrap, jobId, args);
+        const stats = await fs.stat(filePath);
+        if (!stats.isFile() || stats.size === 0) {
+          throw new ExtractorError("The downloader did not produce a usable media file.", {
+            code: "download_failed",
+            status: 502,
+          });
+        }
         jobStore.updateJob(jobId, {
-          status: 'completed',
+          status: "completed",
           file: filename,
           file_url: `/api/media/file/${jobId}`,
           progress: 100,
         });
         return;
-      } catch (error: any) {
-        lastError = error instanceof Error ? error : new Error(String(error));
-        if (strategy.label !== 'ios') {
-          jobStore.updateJob(jobId, {
-            status: 'processing',
-            progress: 0,
-            error: `${strategy.label} attempt failed: ${lastError.message}`,
-          });
-        } else {
-          jobStore.updateJob(jobId, { status: 'error', error: lastError.message });
-          throw lastError;
-        }
+      } catch (error) {
+        const classified = classifyDownloadError(error);
+        if (classified.status === 429) startRateLimitCooldown(url);
+        if (!classified.retryable || classified.status === 429 || attempt === 1) throw classified;
+
+        await fs.rm(filePath, { force: true });
+        const delay = Math.min(500 * 2 ** attempt + Math.random() * 300, 3000);
+        await new Promise((resolve) => setTimeout(resolve, delay));
       }
     }
-
-    throw lastError ?? new Error('Download failed');
-  } catch (error: any) {
-    const message = error?.message || 'Download failed';
-    jobStore.updateJob(jobId, { status: 'error', error: message });
+  } catch (error) {
+    if (filePath) await fs.rm(filePath, { force: true }).catch(() => {});
+    const classified = classifyDownloadError(error);
+    jobStore.updateJob(jobId, {
+      status: "error",
+      error: classified.message,
+      errorCode: classified.code,
+      retryable: classified.retryable,
+    });
   }
+}
+
+function responseForError(error: unknown) {
+  const safeError = toExtractorError(error);
+  const headers = safeError.retryAfterMs
+    ? { "Retry-After": String(Math.ceil(safeError.retryAfterMs / 1000)) }
+    : undefined;
+  return NextResponse.json(errorResponse(safeError), { status: safeError.status, headers });
 }
 
 export async function POST(request: Request) {
   try {
-    const body = await request.json().catch(() => ({}));
-    const { url, format_id } = body as { url?: string; format_id?: string };
-
-    console.info('[download-route] request', {
-      route: 'download',
-      runtime: process.env.NEXT_RUNTIME || 'node',
-      url: typeof url === 'string' ? url : undefined,
-      format_id,
-    });
-
-    if (!url) {
-      return NextResponse.json({ ok: false, error: 'URL is required', code: 'invalid_url' }, { status: 400 });
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      throw new ExtractorError("Request body must be valid JSON.", { code: "invalid_request", status: 400 });
     }
 
+    const url = body && typeof body === "object" ? Reflect.get(body, "url") : undefined;
+    const formatId = body && typeof body === "object" ? Reflect.get(body, "format_id") : undefined;
+    if (typeof url !== "string" || !url.trim()) {
+      throw new ExtractorError("A media URL is required.", { code: "invalid_url", status: 400 });
+    }
+    if (typeof formatId !== "string" || !/^[A-Za-z0-9_.+-]{1,100}$/.test(formatId)) {
+      throw new ExtractorError("Select a valid media format.", { code: "invalid_format", status: 400 });
+    }
+
+    const normalizedUrl = await normalizeAndValidateMediaUrl(url);
+    assertOutsideRateLimitCooldown(normalizedUrl);
+
     if (hasExternalMediaBackend()) {
-      try {
-        const backendResponse = await callMediaBackend<{ ok: boolean; success?: boolean; job_id?: string; error?: string; code?: string }>(
-          '/api/media/download',
-          { url, format_id },
-        );
+      const backendResponse = await callMediaBackend<{
+        ok?: boolean;
+        success?: boolean;
+        job_id?: string;
+        code?: string;
+      }>("/api/media/download", { url: normalizedUrl, format_id: formatId }, "POST", request.signal);
 
-        if (!backendResponse?.ok && !backendResponse?.success) {
-          throw new Error(backendResponse?.error || 'External backend rejected the download request.');
-        }
-
-        return NextResponse.json({
-          success: true,
-          job_id: backendResponse.job_id,
+      if ((!backendResponse?.ok && !backendResponse?.success) ||
+          typeof backendResponse.job_id !== "string" ||
+          !backendResponse.job_id ||
+          backendResponse.job_id.length > 200) {
+        throw new ExtractorError("The media backend could not start this download.", {
+          code: backendResponse?.code || "backend_error",
+          status: 502,
         });
-      } catch (backendError) {
-        console.warn('[download-route] external backend failed', {
-          route: 'download',
-          runtime: process.env.NEXT_RUNTIME || 'node',
-          error: backendError instanceof Error ? backendError.message : backendError,
-        });
-        return NextResponse.json({
-          ok: false,
-          error: 'The configured media backend could not complete the request. Please try again later or reconfigure the backend.',
-          code: 'backend_unavailable',
-        }, { status: 502 });
       }
+      return NextResponse.json({ success: true, job_id: backendResponse.job_id });
     }
 
     if (isVercelServerlessRuntime()) {
-      return NextResponse.json({
-        ok: false,
-        error: 'Download execution is not supported from this Vercel serverless deployment. Configure an external downloader service.',
-        code: 'unsupported_runtime',
-      }, { status: 503 });
+      throw new ExtractorError(
+        "Local downloads require a persistent Node.js worker. Configure an external media backend for serverless deployments.",
+        { code: "unsupported_runtime", status: 503 },
+      );
     }
 
-    const jobId = uuidv4();
-    jobStore.createJob(jobId);
+    const requestKey = createHash("sha256").update(`${normalizedUrl}\n${formatId}`).digest("hex");
+    const result = jobStore.createOrGetActiveJob(uuidv4(), requestKey, getMaxConcurrentDownloads());
+    if (!result) {
+      throw new ExtractorError("Download capacity is currently full. Please try again shortly.", {
+        code: "service_busy",
+        status: 503,
+        retryable: true,
+        retryAfterMs: 5000,
+      });
+    }
 
-    // Run the download process in the background
-    // Vercel's waitUntil prevents the function from shutting down immediately
-    waitUntil(processDownload(jobId, url, format_id ?? ''));
+    if (!result.duplicate) {
+      waitUntil(processDownload(result.job.id, normalizedUrl, formatId));
+    }
 
-    return NextResponse.json({ success: true, job_id: jobId });
-  } catch (error: any) {
-    console.error('[download-route] failed', {
-      route: 'download',
-      runtime: process.env.NEXT_RUNTIME || 'node',
-      error: error?.message,
-      stack: error instanceof Error ? error.stack : undefined,
-    });
-    return NextResponse.json({ ok: false, error: error.message, code: 'download_failed' }, { status: 500 });
+    return NextResponse.json({ success: true, job_id: result.job.id, duplicate: result.duplicate });
+  } catch (error) {
+    return responseForError(error);
   }
 }
