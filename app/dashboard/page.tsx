@@ -9,6 +9,7 @@ import { Navbar } from "@/components/Navbar";
 import { MediaCard } from "@/components/MediaCard";
 import { FormatList } from "@/components/FormatList";
 import {
+  ApiError,
   fetchMediaInfo,
   type MediaInfo,
 } from "@/lib/api";
@@ -20,6 +21,7 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(false);
   const [mediaInfo, setMediaInfo] = useState<MediaInfo | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [canRetry, setCanRetry] = useState(false);
 
   const handleFetchInfo = async () => {
     if (!url.trim()) {
@@ -30,15 +32,18 @@ export default function DashboardPage() {
     setLoading(true);
     setMediaInfo(null);
     setErrorMessage(null);
+    setCanRetry(false);
 
     try {
       const info = await fetchMediaInfo(url);
       setMediaInfo(info);
       setErrorMessage(null);
+      setCanRetry(false);
       toast.success("Media info loaded");
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to fetch media info.";
       setErrorMessage(message);
+      setCanRetry(error instanceof ApiError && error.retryable);
       toast.error(message);
     } finally {
       setLoading(false);
@@ -95,9 +100,11 @@ export default function DashboardPage() {
                 <AlertCircle className="h-4 w-4 mt-0.5" />
                 <span>{errorMessage}</span>
               </div>
-              <Button variant="outline" size="sm" onClick={handleFetchInfo} disabled={loading || !url.trim()}>
-                Retry
-              </Button>
+              {canRetry && (
+                <Button variant="outline" size="sm" onClick={handleFetchInfo} disabled={loading || !url.trim()}>
+                  Retry
+                </Button>
+              )}
             </div>
           )}
 

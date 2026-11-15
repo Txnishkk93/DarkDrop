@@ -147,11 +147,13 @@ function classifyExtractionError(error: unknown): ExtractorError {
           status: 409,
         });
       case 'PLAYER_SOLVE_FAILED':
-        return new ExtractorError('The source could not process its current player response. Please try again later.', {
-          code: 'upstream_failure',
-          status: 502,
-          retryable: true,
-        });
+        return new ExtractorError(
+          "The extractor cannot process YouTube's current player response. Retrying will not help; configure an authorized external media backend or use a supported source.",
+          {
+            code: 'player_solver_unavailable',
+            status: 502,
+          },
+        );
     }
   }
 
