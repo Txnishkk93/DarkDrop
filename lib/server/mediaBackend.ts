@@ -14,7 +14,7 @@ export interface BackendDownloadPayload {
   format_id?: string;
 }
 
-function getBackendBaseUrl(): URL | undefined {
+function getBackendBaseUrl(requestUrl?: string): URL | undefined {
   const raw = process.env.MEDIA_BACKEND_URL || process.env.EXTERNAL_MEDIA_BACKEND_URL;
   if (!raw) return undefined;
 
@@ -24,6 +24,13 @@ function getBackendBaseUrl(): URL | undefined {
   } catch {
     throw new ExtractorError("The configured media backend URL is invalid.", {
       code: "invalid_backend_configuration",
+      status: 500,
+    });
+  }
+
+  if (requestUrl && url.origin === new URL(requestUrl).origin) {
+    throw new ExtractorError("MEDIA_BACKEND_URL must point to a separate backend, not this DarkDrop deployment.", {
+      code: "self_referencing_backend",
       status: 500,
     });
   }
@@ -45,8 +52,8 @@ function getBackendBaseUrl(): URL | undefined {
   return url;
 }
 
-function getBackendUrl(pathname: string): string | undefined {
-  const baseUrl = getBackendBaseUrl();
+function getBackendUrl(pathname: string, requestUrl?: string): string | undefined {
+  const baseUrl = getBackendBaseUrl(requestUrl);
   if (!baseUrl) return undefined;
   return new URL(pathname.replace(/^\//, ""), `${baseUrl.toString().replace(/\/$/, "")}/`).toString();
 }
@@ -92,8 +99,9 @@ async function fetchBackend(
   init: RequestInit,
   timeoutMs = getRequestTimeoutMs(),
   requestSignal?: AbortSignal,
+  requestUrl?: string,
 ): Promise<Response> {
-  const backendUrl = getBackendUrl(pathname);
+  const backendUrl = getBackendUrl(pathname, requestUrl);
   if (!backendUrl) {
     throw new ExtractorError("No external media backend is configured.", {
       code: "backend_not_configured",
@@ -138,6 +146,7 @@ export async function callMediaBackend<T>(
   payload?: BackendInfoPayload | BackendDownloadPayload,
   method: "GET" | "POST" = "POST",
   requestSignal?: AbortSignal,
+  requestUrl?: string,
 ): Promise<T> {
   const init: RequestInit = {
     method,
@@ -150,7 +159,7 @@ export async function callMediaBackend<T>(
   let response: Response | undefined;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
-      response = await fetchBackend(pathname, init, getRequestTimeoutMs(), requestSignal);
+      response = await fetchBackend(pathname, init, getRequestTimeoutMs(), requestSignal, requestUrl);
       break;
     } catch (error) {
       if (!(error instanceof ExtractorError) || !error.retryable || error.status === 429 || attempt === attempts - 1) {
@@ -178,8 +187,18 @@ export async function callMediaBackend<T>(
   }
 }
 
-export async function fetchBackendFile(jobId: string, requestSignal?: AbortSignal): Promise<Response> {
-  return fetchBackend(`/api/media/file/${encodeURIComponent(jobId)}`, { method: "GET" }, 2 * 60 * 1000, requestSignal);
+export async function fetchBackendFile(
+  jobId: string,
+  requestUrl?: string,
+  requestSignal?: AbortSignal,
+): Promise<Response> {
+  return fetchBackend(
+    `/api/media/file/${encodeURIComponent(jobId)}`,
+    { method: "GET" },
+    2 * 60 * 1000,
+    requestSignal,
+    requestUrl,
+  );
 }
 
 export function hasExternalMediaBackend(): boolean {

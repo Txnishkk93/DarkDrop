@@ -36,7 +36,7 @@ export async function POST(request: Request) {
         platform?: string;
         formats?: ExtractedMediaInfo["formats"];
         code?: string;
-      }>("/api/info", { url: normalizedUrl }, "POST", request.signal));
+      }>("/api/info", { url: normalizedUrl }, "POST", request.signal, request.url));
 
       if (!backendInfo || backendInfo.ok !== true) {
         throw new ExtractorError("The media backend could not retrieve information for this URL.", {

@@ -20,7 +20,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ jobI
     }
 
     if (hasExternalMediaBackend()) {
-      const backendResponse = await fetchBackendFile(jobId, request.signal);
+      const backendResponse = await fetchBackendFile(jobId, request.url, request.signal);
       const headers = new Headers();
       for (const name of ["content-type", "content-length", "content-disposition"]) {
         const value = backendResponse.headers.get(name);

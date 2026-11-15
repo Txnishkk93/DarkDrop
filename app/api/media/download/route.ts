@@ -204,7 +204,7 @@ export async function POST(request: Request) {
         success?: boolean;
         job_id?: string;
         code?: string;
-      }>("/api/media/download", { url: normalizedUrl, format_id: formatId }, "POST", request.signal);
+      }>("/api/media/download", { url: normalizedUrl, format_id: formatId }, "POST", request.signal, request.url);
 
       if ((!backendResponse?.ok && !backendResponse?.success) ||
           typeof backendResponse.job_id !== "string" ||

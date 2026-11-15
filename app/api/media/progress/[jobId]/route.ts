@@ -38,7 +38,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ jobI
         code?: string;
         retryable?: boolean;
         file_url?: string;
-      }>(`/api/media/progress/${encodeURIComponent(jobId)}`, undefined, 'GET', request.signal);
+      }>(`/api/media/progress/${encodeURIComponent(jobId)}`, undefined, 'GET', request.signal, request.url);
 
       const status = ['pending', 'processing', 'completed', 'error'].includes(backendJob.status || '')
         ? backendJob.status!
