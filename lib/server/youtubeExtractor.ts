@@ -1,4 +1,4 @@
-import { Ytdl, type VideoInfo } from '@distube/ytdl-core';
+import { Ytdl, YtdlError, type VideoInfo } from '@distube/ytdl-core';
 import { getYouTubeRestrictionMessage, isYouTubeExtractionDisabled } from '@/lib/server/extractionPolicy';
 import { ExtractorError } from '@/lib/server/errors';
 import { getRequestTimeoutMs } from '@/lib/server/reliability';
@@ -87,7 +87,74 @@ function getRetryAfterMs(error: unknown): number | undefined {
 
 function classifyExtractionError(error: unknown): ExtractorError {
   const message = error instanceof Error ? error.message : '';
-  const lower = message.toLowerCase();
+  const cause = getProperty(error, 'cause');
+  const causeMessage = cause instanceof Error ? cause.message : '';
+  const lower = `${message} ${causeMessage}`.toLowerCase();
+
+  if (YtdlError.is(error)) {
+    switch (error.code) {
+      case 'BOT_CHECK':
+        return new ExtractorError(
+          'YouTube blocked metadata requests from this server. Configure an authorized external media backend or use a supported source.',
+          { code: 'upstream_blocked', status: 403 },
+        );
+      case 'RATE_LIMITED':
+        return new ExtractorError('YouTube is rate-limiting requests. Please wait before trying again.', {
+          code: 'upstream_rate_limited',
+          status: 429,
+          retryable: true,
+          retryAfterMs: getRetryAfterMs(error),
+        });
+      case 'REQUEST_FAILED':
+        if (/\bhttp(?: error)?\s*403\b|\b403 forbidden\b/.test(lower)) {
+          return new ExtractorError(
+            'YouTube denied this metadata request from the server (HTTP 403). Configure an authorized external media backend or use a supported source.',
+            { code: 'upstream_blocked', status: 403 },
+          );
+        }
+        if (/\bhttp(?: error)?\s*429\b|\b429 too many requests\b/.test(lower)) {
+          return new ExtractorError('YouTube is rate-limiting requests. Please wait before trying again.', {
+            code: 'upstream_rate_limited',
+            status: 429,
+            retryable: true,
+            retryAfterMs: getRetryAfterMs(error),
+          });
+        }
+        break;
+      case 'PRIVATE':
+      case 'AGE_RESTRICTED':
+      case 'MEMBERS_ONLY':
+      case 'PREMIUM_ONLY':
+      case 'REGION_BLOCKED':
+      case 'AUTH_FAILED':
+        return new ExtractorError('This video requires access or is restricted in this region.', {
+          code: 'access_denied',
+          status: 403,
+        });
+      case 'NOT_FOUND':
+        return new ExtractorError('This video is unavailable or cannot be accessed.', {
+          code: 'content_unavailable',
+          status: 404,
+        });
+      case 'NO_FORMAT':
+        return new ExtractorError('No downloadable video formats are available for this video.', {
+          code: 'content_unavailable',
+          status: 404,
+        });
+      case 'NOT_STARTED':
+        return new ExtractorError('This live stream or premiere has not started yet.', {
+          code: 'content_unavailable',
+          status: 409,
+        });
+      case 'PLAYER_SOLVE_FAILED':
+        return new ExtractorError('The source could not process its current player response. Please try again later.', {
+          code: 'upstream_failure',
+          status: 502,
+          retryable: true,
+        });
+    }
+  }
+
   const res = getProperty(error, 'response');
   const status = error && typeof error === 'object'
     ? Number(getProperty(error, 'statusCode') ?? getProperty(error, 'status') ?? (res ? getProperty(res, 'status') : undefined)) || 0
