@@ -1,4 +1,4 @@
-import ytdl from '@distube/ytdl-core';
+import { Ytdl, type VideoInfo } from '@distube/ytdl-core';
 import { getYouTubeRestrictionMessage, isYouTubeExtractionDisabled } from '@/lib/server/extractionPolicy';
 import { ExtractorError } from '@/lib/server/errors';
 import { getRequestTimeoutMs } from '@/lib/server/reliability';
@@ -36,29 +36,22 @@ function isYouTubeUrl(rawUrl: string): boolean {
   }
 }
 
-function normalizeFormats(info: Awaited<ReturnType<typeof ytdl.getInfo>>): ExtractedMediaInfo['formats'] {
+function normalizeFormats(info: VideoInfo): ExtractedMediaInfo['formats'] {
   const formatMap = new Map<string, ExtractedMediaInfo['formats'][number]>();
   const rawFormats = info.formats || [];
 
   for (const format of rawFormats) {
-    if (format.hasVideo && format.hasAudio) {
-      let height = format.height;
-      const formatNote = (format as { format_note?: string }).format_note;
-      if (!height && typeof formatNote === 'string' && formatNote.includes('p')) {
-        const parsed = Number.parseInt(formatNote, 10);
-        if (!Number.isNaN(parsed)) {
-          height = parsed;
-        }
-      }
-
-      const resolutionLabel = height ? `${height}p` : formatNote || (format as { resolution?: string }).resolution || 'unknown';
-      const filesize = (format as { filesize?: number; filesize_approx?: number }).filesize || (format as { filesize?: number; filesize_approx?: number }).filesize_approx || 0;
+    if (format.hasVideo) {
+      const resolutionLabel = format.height
+        ? `${format.height}p`
+        : format.qualityLabel || format.quality || 'unknown';
+      const filesize = format.contentLength || 0;
       const existing = formatMap.get(resolutionLabel);
 
       if (!existing || filesize > (existing.filesize || 0)) {
         formatMap.set(resolutionLabel, {
-          format_id: (format as { format_id?: string }).format_id || 'unknown',
-          ext: (format as { ext?: string }).ext || 'mp4',
+          format_id: format.hasAudio ? String(format.itag) : `${format.itag}+bestaudio`,
+          ext: format.container || 'mp4',
           quality: resolutionLabel,
           filesize,
         });
@@ -186,12 +179,11 @@ export async function extractMediaInfo(url: string): Promise<ExtractedMediaInfo>
     throw new ExtractorError(getYouTubeRestrictionMessage(), { code: 'youtube_extraction_disabled', status: 403 });
   }
 
+  const ytdl = new Ytdl({ timeoutMs: getRequestTimeoutMs() });
   let lastError: ExtractorError | undefined;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      const info = await ytdl.getInfo(trimmedUrl, {
-        requestOptions: { timeout: getRequestTimeoutMs() },
-      });
+      const info = await ytdl.getInfo(trimmedUrl);
 
       return {
         title: info.videoDetails?.title || 'Unknown',

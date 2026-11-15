@@ -1,5 +1,9 @@
 import { ExtractorError } from "@/lib/server/errors";
-import { getRequestTimeoutMs } from "@/lib/server/reliability";
+import {
+  assertOutsideRateLimitCooldown,
+  getRequestTimeoutMs,
+  startRateLimitCooldown,
+} from "@/lib/server/reliability";
 
 export interface BackendInfoPayload {
   url: string;
@@ -74,6 +78,7 @@ function classifyBackendFailure(status: number, retryAfter?: string | null): Ext
       code: "backend_unavailable",
       status: 502,
       retryable: true,
+      retryAfterMs,
     });
   }
   return new ExtractorError("The media backend could not complete the request.", {
@@ -96,6 +101,7 @@ async function fetchBackend(
     });
   }
 
+  assertOutsideRateLimitCooldown(backendUrl);
   try {
     const response = await fetch(backendUrl, {
       ...init,
@@ -107,7 +113,11 @@ async function fetchBackend(
     if (!response.ok) throw classifyBackendFailure(response.status, response.headers.get("retry-after"));
     return response;
   } catch (error) {
-    if (error instanceof ExtractorError) throw error;
+    if (requestSignal?.aborted) throw error;
+    if (error instanceof ExtractorError) {
+      if (error.status === 429) startRateLimitCooldown(backendUrl, error.retryAfterMs);
+      throw error;
+    }
     if (error instanceof DOMException && error.name === "TimeoutError") {
       throw new ExtractorError("The media backend request timed out. Please try again.", {
         code: "timeout",
@@ -129,18 +139,34 @@ export async function callMediaBackend<T>(
   method: "GET" | "POST" = "POST",
   requestSignal?: AbortSignal,
 ): Promise<T> {
-  const response = await fetchBackend(
-    pathname,
-    {
-      method,
-      ...(payload ? {
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(payload),
-      } : {}),
-    },
-    getRequestTimeoutMs(),
-    requestSignal,
-  );
+  const init: RequestInit = {
+    method,
+    ...(payload ? {
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    } : {}),
+  };
+  const attempts = method === "POST" && pathname === "/api/info" ? 2 : 1;
+  let response: Response | undefined;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      response = await fetchBackend(pathname, init, getRequestTimeoutMs(), requestSignal);
+      break;
+    } catch (error) {
+      if (!(error instanceof ExtractorError) || !error.retryable || error.status === 429 || attempt === attempts - 1) {
+        throw error;
+      }
+      const delay = Math.min(error.retryAfterMs ?? (500 * 2 ** attempt + Math.random() * 300), 3000);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+  if (!response) {
+    throw new ExtractorError("The media backend could not be reached. Please try again later.", {
+      code: "backend_unavailable",
+      status: 502,
+      retryable: true,
+    });
+  }
 
   try {
     return (await response.json()) as T;

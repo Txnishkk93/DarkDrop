@@ -51,7 +51,10 @@ function classifyDownloadError(error: unknown): ExtractorError {
       retryable: true,
     });
   }
-  if (/timed? ?out|timeout|econnreset|econnrefused|eai_again|socket hang up/i.test(lower)) {
+  if (
+    error instanceof Error && error.name === "TimeoutError" ||
+    /timed? ?out|timeout|econnreset|econnrefused|eai_again|socket hang up/i.test(lower)
+  ) {
     return new ExtractorError("The download timed out or could not connect. Please try again.", {
       code: "network_error",
       status: 504,
@@ -89,6 +92,7 @@ async function runDownloadAttempt(
     process.on("error", (error) => finish(() => reject(error)));
     process.on("close", (code) => {
       if (code === 0) finish(resolve);
+      else if (signal.aborted) finish(() => reject(new Error("Download timed out.")));
       else finish(() => reject(new Error(`Downloader exited with code ${code ?? "unknown"}.`)));
     });
   });
@@ -102,17 +106,17 @@ async function processDownload(jobId: string, url: string, formatId: string) {
     const filename = `${jobId}.mp4`;
     filePath = path.join(DOWNLOAD_DIR, filename);
 
-    // The chosen format is passed through unchanged; no platform or format fallback is attempted.
+    // The generic option selects the best video and audio streams; explicit formats stay unchanged.
     const args = [
       "--no-playlist",
       "--socket-timeout",
       String(Math.ceil(getRequestTimeoutMs() / 1000)),
       "--retries",
-      "1",
+      "0",
       "--fragment-retries",
-      "1",
+      "0",
       "-f",
-      formatId,
+      formatId === "best" ? "bestvideo+bestaudio/best" : formatId,
       "--merge-output-format",
       "mp4",
       "--no-warnings",
@@ -150,7 +154,11 @@ async function processDownload(jobId: string, url: string, formatId: string) {
       }
     }
   } catch (error) {
-    if (filePath) await fs.rm(filePath, { force: true }).catch(() => {});
+    if (filePath) {
+      await fs.rm(filePath, { force: true }).catch(() => {
+        console.error("[download-route] failed download artifact cleanup failed");
+      });
+    }
     const classified = classifyDownloadError(error);
     jobStore.updateJob(jobId, {
       status: "error",

@@ -7,9 +7,9 @@ interface FormatListProps {
 }
 
 export function FormatList({ url, formats }: FormatListProps) {
-  if (!formats || formats.length === 0) {
-    return null;
-  }
+  const availableFormats = formats?.length
+    ? formats
+    : [{ format_id: "best", ext: "mp4", quality: "Best available" }];
 
   return (
     <div className="space-y-4">
@@ -21,7 +21,7 @@ export function FormatList({ url, formats }: FormatListProps) {
       </div>
       
       <div className="flex flex-col gap-3 mt-4">
-        {formats.map((format) => (
+        {availableFormats.map((format) => (
           <FormatRow key={format.format_id} url={url} format={format} />
         ))}
       </div>

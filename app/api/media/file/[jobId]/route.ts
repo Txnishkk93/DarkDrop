@@ -67,7 +67,9 @@ export async function GET(request: Request, { params }: { params: Promise<{ jobI
     const fileStream = createReadStream(filePath);
     const webStream = new ReadableStream<Uint8Array>({
       start(controller) {
-        fileStream.on("data", (chunk: Buffer) => controller.enqueue(new Uint8Array(chunk)));
+        fileStream.on("data", (chunk) => {
+          controller.enqueue(typeof chunk === "string" ? new TextEncoder().encode(chunk) : new Uint8Array(chunk));
+        });
         fileStream.on("end", () => controller.close());
         fileStream.on("error", (error) => {
           jobStore.deleteJob(jobId);

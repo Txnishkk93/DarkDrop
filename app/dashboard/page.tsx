@@ -114,9 +114,7 @@ export default function DashboardPage() {
               {/* Download Options */}
               <Card className="border-border/50 bg-card/50 backdrop-blur-sm animate-fade-in">
                 <CardContent className="p-6 space-y-6">
-                  {mediaInfo.formats && mediaInfo.formats.length > 0 && (
-                    <FormatList url={url} formats={mediaInfo.formats} />
-                  )}
+                  <FormatList url={url} formats={mediaInfo.formats || []} />
                 </CardContent>
               </Card>
             </div>
